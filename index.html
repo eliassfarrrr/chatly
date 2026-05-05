@@ -297,7 +297,7 @@
       await setDoc(doc(db, 'usernames', id), { uid, code });
       await setDoc(doc(db, 'codes', code), { uid, name, id });
 
-      me = { uid, id, name, code };
+      me = { uid, id, name, code, photoUrl: null, statusMsg: '' };
       toast('가입 완료! 코드: ' + code);
       enterApp();
     } catch (e) {
@@ -330,7 +330,7 @@
       const userDoc = await getDoc(doc(db, 'users', user.uid));
       if (userDoc.exists()) {
         const d = userDoc.data();
-        me = { uid: user.uid, id: d.id, name: d.name, code: d.code };
+        me = { uid: user.uid, id: d.id, name: d.name, code: d.code, photoUrl: d.photoUrl||null, statusMsg: d.statusMsg||'' };
         enterApp();
       }
     } else {
@@ -355,7 +355,10 @@
     if (msgUnsub) { msgUnsub(); msgUnsub = null; }
     if (typingUnsub) { typingUnsub(); typingUnsub = null; }
     if (friendsUnsub) { friendsUnsub(); friendsUnsub = null; }
+    if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
+    if (presenceTimer) clearInterval(presenceTimer);
     clearTyping();
+    await updatePresence(false);
     await signOut(auth);
     me = null; curFriend = null;
     document.getElementById('s-main').classList.remove('on');
@@ -373,9 +376,27 @@
     document.getElementById('s-main').classList.add('on');
     document.getElementById('prof-name').textContent = me.name;
     document.getElementById('prof-code').textContent = '코드: ' + me.code;
+    updateMyProfileUI();
+    startFriendsListener();
+    startPresence(); // 온라인 상태 시작
+  }
+
+  function updateMyProfileUI() {
     const pa = document.getElementById('prof-av');
-    pa.textContent = ini(me.name); pa.style.background = avColor(me.code);
-    startFriendsListener(); // 리스너가 자동으로 renderChatList 호출함
+    if (me.photoUrl) {
+      pa.style.backgroundImage = `url(${me.photoUrl})`;
+      pa.style.backgroundSize = 'cover';
+      pa.style.backgroundPosition = 'center';
+      pa.textContent = '';
+    } else {
+      pa.style.backgroundImage = '';
+      pa.textContent = ini(me.name);
+      pa.style.background = avColor(me.code);
+    }
+    const statusEl = document.getElementById('prof-status');
+    if (statusEl) statusEl.textContent = me.statusMsg || '상태 메시지를 설정하세요';
+    const dot = document.getElementById('prof-online-dot');
+    if (dot) dot.style.display = 'inline-block';
   }
 
   // ── 탭 전환 ──
@@ -446,12 +467,18 @@
   window.openChat = async function(f) {
     curFriend = f;
     if (msgUnsub) { msgUnsub(); msgUnsub = null; }
+    if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
     document.getElementById('ct-name').textContent = f.name;
-    const ca = document.getElementById('ct-av');
-    ca.textContent = ini(f.name); ca.style.background = avColor(f.code);
+    document.getElementById('ct-status').textContent = '확인 중...';
+    document.getElementById('ct-status').style.color = 'var(--tx3)';
     document.getElementById('msg-in').value = '';
     document.getElementById('msg-in').style.height = 'auto';
     document.getElementById('chat-screen').classList.add('open');
+
+    // 프로필 사진 + 상태 메시지 로드
+    updateChatHeader(f);
+    // 온라인 상태 실시간 감지
+    startPresenceListener(f.code);
 
     const ck = convKey(me.code, f.code);
     const msgsRef = collection(db, 'conversations', ck, 'messages');
@@ -478,6 +505,7 @@
   window.closeChat = function() {
     if (msgUnsub) { msgUnsub(); msgUnsub = null; }
     if (typingUnsub) { typingUnsub(); typingUnsub = null; }
+    if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
     clearTyping();
     document.getElementById('chat-screen').classList.remove('open');
     document.getElementById('tybar').style.display = 'none';
@@ -857,6 +885,130 @@
     window.closeChat(); closeModal(); renderChatList();
   };
 
+  // ── 프로필 사진 변경 ──
+  window.changeProfilePhoto = function() {
+    const input = document.createElement('input');
+    input.type = 'file'; input.accept = 'image/*';
+    input.onchange = async () => {
+      const file = input.files[0]; if (!file) return;
+      toast('프로필 사진 업로드 중...', '#5865f2');
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('upload_preset', CLOUDINARY_PRESET);
+      formData.append('folder', 'chatly/profiles');
+      try {
+        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { method: 'POST', body: formData });
+        const data = await res.json();
+        if (!data.secure_url) throw new Error();
+        me.photoUrl = data.secure_url;
+        await updateDoc(doc(db, 'users', me.uid), { photoUrl: data.secure_url });
+        await setDoc(doc(db, 'codes', me.code), { photoUrl: data.secure_url }, { merge: true });
+        updateMyProfileUI();
+        toast('프로필 사진 변경 완료! ✅');
+      } catch { toast('업로드 실패 😢', '#f23f42'); }
+    };
+    input.click();
+  };
+
+  // ── 상태 메시지 편집 ──
+  window.editStatusMsg = function() {
+    showSheet(`
+      <h2>상태 메시지</h2>
+      <input class="mi2" id="status-inp" placeholder="상태 메시지 입력..." maxlength="50" value="${esc(me.statusMsg||'')}">
+      <div class="sheet-btns">
+        <button class="sht-btn sht-ok" onclick="saveStatusMsg()">저장</button>
+        <button class="sht-btn sht-cancel" onclick="closeModal()">취소</button>
+      </div>`);
+    setTimeout(() => document.getElementById('status-inp')?.focus(), 100);
+  };
+  window.saveStatusMsg = async function() {
+    const val = document.getElementById('status-inp').value.trim();
+    me.statusMsg = val;
+    await updateDoc(doc(db, 'users', me.uid), { statusMsg: val });
+    await setDoc(doc(db, 'codes', me.code), { statusMsg: val }, { merge: true });
+    updateMyProfileUI();
+    closeModal();
+    toast('상태 메시지 저장됨 ✅');
+  };
+
+  // ── 온라인/오프라인 표시 ──
+  let presenceTimer = null;
+  function startPresence() {
+    updatePresence(true);
+    // 30초마다 온라인 갱신
+    presenceTimer = setInterval(() => updatePresence(true), 30000);
+    // 탭 숨김/표시 감지
+    document.addEventListener('visibilitychange', () => {
+      updatePresence(!document.hidden);
+    });
+  }
+  async function updatePresence(online) {
+    if (!me) return;
+    await setDoc(doc(db, 'presence', me.code), {
+      online, lastSeen: serverTimestamp()
+    });
+  }
+
+  let presenceUnsub = null;
+  function startPresenceListener(friendCode) {
+    if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
+    presenceUnsub = onSnapshot(doc(db, 'presence', friendCode), snap => {
+      const statusEl = document.getElementById('ct-status');
+      if (!statusEl) return;
+      if (snap.exists() && snap.data().online) {
+        statusEl.textContent = '온라인';
+        statusEl.style.color = 'var(--grn)';
+      } else {
+        statusEl.textContent = '오프라인';
+        statusEl.style.color = 'var(--tx3)';
+      }
+    });
+  }
+
+  // ── 친구 목록에서 프로필 사진 가져오기 ──
+  async function getFriendAvHtml(f) {
+    const codeSnap = await getDoc(doc(db, 'codes', f.code));
+    const photo = codeSnap.exists() ? codeSnap.data().photoUrl : null;
+    if (photo) {
+      return `<div class="cl-av" style="background:${avColor(f.code)};background-image:url(${photo});background-size:cover;background-position:center"><span class="cl-online"></span></div>`;
+    }
+    return `<div class="cl-av" style="background:${avColor(f.code)}">${ini(f.name)}<span class="cl-online"></span></div>`;
+  }
+
+  // ── 채팅 헤더 아바타 업데이트 ──
+  async function updateChatHeader(f) {
+    const codeSnap = await getDoc(doc(db, 'codes', f.code));
+    const photo = codeSnap.exists() ? codeSnap.data().photoUrl : null;
+    const ca = document.getElementById('ct-av');
+    if (photo) {
+      ca.style.backgroundImage = `url(${photo})`;
+      ca.style.backgroundSize = 'cover';
+      ca.style.backgroundPosition = 'center';
+      ca.textContent = '';
+    } else {
+      ca.style.backgroundImage = '';
+      ca.textContent = ini(f.name);
+      ca.style.background = avColor(f.code);
+    }
+    // 상태 메시지도 업데이트
+    const statusMsg = codeSnap.exists() ? codeSnap.data().statusMsg : null;
+    if (statusMsg) {
+      document.getElementById('ct-status').textContent = statusMsg;
+      document.getElementById('ct-status').style.color = 'var(--tx3)';
+    }
+  }
+
+  // ── 사이드바 내 아바타 업데이트 ──
+  async function updateSidebarAvatar() {
+    const userDoc = await getDoc(doc(db, 'users', me.uid));
+    if (userDoc.exists()) {
+      const d = userDoc.data();
+      me.photoUrl = d.photoUrl || null;
+      me.statusMsg = d.statusMsg || '';
+    }
+    updateMyProfileUI();
+  }
+
   // ── 친구 요청 알림 체크 + 실시간 친구 추가 감지 ──
   async function checkReqBadge() {
     if (!me) return;
@@ -1133,7 +1285,13 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
 /* 프로필 탭 */
 .profile-wrap{flex:1;overflow-y:auto;padding:20px 16px;background:var(--bg)}
 .profile-card{background:var(--bg2);border-radius:18px;padding:28px;text-align:center;margin-bottom:16px}
-.profile-av{width:76px;height:76px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:28px;margin:0 auto 12px}
+.profile-av{width:76px;height:76px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:28px;margin:0 auto}
+.profile-av-wrap{position:relative;width:76px;margin:0 auto 12px;cursor:pointer}
+.profile-av-edit{position:absolute;bottom:0;right:0;width:24px;height:24px;border-radius:50%;background:var(--acc);display:flex;align-items:center;justify-content:center;font-size:12px;border:2px solid var(--bg2)}
+.profile-status-wrap{display:flex;align-items:center;justify-content:center;gap:5px;margin:4px 0 8px}
+.online-dot{width:8px;height:8px;border-radius:50%;background:var(--grn);display:none;flex-shrink:0}
+.profile-status-text{font-size:13px;color:var(--tx3);cursor:pointer}
+.profile-status-text:active{opacity:.7}
 .profile-name{font-size:22px;font-weight:700;margin-bottom:4px}
 .profile-code{font-size:13px;color:var(--tx3);letter-spacing:2px;cursor:pointer;padding:6px 16px;background:var(--bg3);border-radius:20px;display:inline-block;margin-top:6px}
 .menu-section{background:var(--bg2);border-radius:16px;overflow:hidden;margin-bottom:12px}
@@ -1286,11 +1444,20 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
       </div>
       <div class="profile-wrap">
         <div class="profile-card">
-          <div class="profile-av" id="prof-av">?</div>
+          <div class="profile-av-wrap" onclick="changeProfilePhoto()">
+            <div class="profile-av" id="prof-av">?</div>
+            <div class="profile-av-edit">📷</div>
+          </div>
           <div class="profile-name" id="prof-name">-</div>
+          <div class="profile-status-wrap">
+            <span class="online-dot" id="prof-online-dot"></span>
+            <span class="profile-status-text" id="prof-status" onclick="editStatusMsg()">상태 메시지를 설정하세요</span>
+          </div>
           <div class="profile-code" id="prof-code" onclick="copyCode()">코드: ------</div>
         </div>
         <div class="menu-section">
+          <div class="menu-item" onclick="changeProfilePhoto()"><span class="menu-icon">🖼</span><span class="menu-label">프로필 사진 변경</span><span class="menu-arrow">›</span></div>
+          <div class="menu-item" onclick="editStatusMsg()"><span class="menu-icon">✏️</span><span class="menu-label">상태 메시지 변경</span><span class="menu-arrow">›</span></div>
           <div class="menu-item" onclick="copyCode()"><span class="menu-icon">🔑</span><span class="menu-label">내 코드 복사</span><span class="menu-arrow">›</span></div>
           <div class="menu-item" onclick="openAddSheet()"><span class="menu-icon">👤</span><span class="menu-label">친구 추가</span><span class="menu-arrow">›</span></div>
           <div class="menu-item" onclick="openReqSheet()"><span class="menu-icon">🔔</span><span class="menu-label">친구 요청 확인</span><span class="menu-arrow">›</span></div>
@@ -1309,7 +1476,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
     <div class="chat-topbar">
       <button class="back-btn" onclick="closeChat()">‹</button>
       <div class="ct-av" id="ct-av">?</div>
-      <div class="ct-info"><div class="ct-name" id="ct-name">-</div><div class="ct-status">온라인</div></div>
+      <div class="ct-info"><div class="ct-name" id="ct-name">-</div><div class="ct-status" id="ct-status">확인 중...</div></div>
       <button class="top-icon" onclick="openFriendSheet()" style="font-size:17px">ℹ</button>
     </div>
     <div class="msgs" id="msgs"></div>
