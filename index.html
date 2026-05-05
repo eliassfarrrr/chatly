@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
-  const firebaseConfig = {
+   const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -355,6 +355,7 @@
     if (msgUnsub) { msgUnsub(); msgUnsub = null; }
     if (typingUnsub) { typingUnsub(); typingUnsub = null; }
     if (friendsUnsub) { friendsUnsub(); friendsUnsub = null; }
+    if (notifUnsub) { notifUnsub(); notifUnsub = null; }
     if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
     if (presenceTimer) clearInterval(presenceTimer);
     clearTyping();
@@ -378,6 +379,7 @@
     document.getElementById('prof-code').textContent = '코드: ' + me.code;
     updateMyProfileUI();
     startFriendsListener();
+    startNotificationsListener();
     startPresence(); // 온라인 상태 시작
   }
 
@@ -918,6 +920,7 @@
     await setDoc(doc(db, 'users', fromUid, 'friends', me.code), { uid: me.uid, name: me.name, code: me.code });
     await setDoc(doc(db, 'notifications', fromUid + '_' + me.uid), {
       type: 'friendAccepted',
+      to: fromUid,
       from: { uid: me.uid, name: me.name, code: me.code },
       createdAt: serverTimestamp()
     });
@@ -1146,22 +1149,33 @@
     }
   }
 
-  setInterval(() => { if (me) { checkReqBadge(); checkNotifications(); } }, 4000);
-
-  // 수락 알림 체크
-  async function checkNotifications() {
-    if (!me) return;
-    const snap = await getDocs(query(
-      collection(db, 'notifications'),
-      where('type', '==', 'friendAccepted')
-    ));
-    for (const d of snap.docs) {
-      if (!d.id.startsWith(me.uid + '_')) continue;
-      const { from } = d.data();
-      toast(from.name + '이 친구 요청을 수락했어요! 🎉');
-      await deleteDoc(d.ref);
-    }
+  let notifUnsub = null;
+  function startNotificationsListener() {
+    if (notifUnsub) { notifUnsub(); notifUnsub = null; }
+    // 내 uid로 시작하는 notification 실시간 감지
+    notifUnsub = onSnapshot(
+      query(collection(db, 'notifications'), where('to', '==', me.uid)),
+      async snap => {
+        for (const d of snap.docs) {
+          const data = d.data();
+          if (data.type === 'friendAccepted') {
+            const { from } = data;
+            // 내 friends에 추가
+            const fs = await getFriends();
+            if (!fs.find(f => f.code === from.code)) {
+              await setDoc(doc(db, 'users', me.uid, 'friends', from.code), {
+                uid: from.uid, name: from.name, code: from.code
+              });
+              toast(from.name + '이 친구 요청을 수락했어요! 🎉');
+            }
+            await deleteDoc(d.ref);
+          }
+        }
+      }
+    );
   }
+
+  setInterval(() => { if (me) checkReqBadge(); }, 4000);
 
   // ── 사진 업로드 (Cloudinary) ──
   window.uploadPhoto = async function(input) {
