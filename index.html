@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
-  const firebaseConfig = {
+   const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -567,7 +567,7 @@
       </div>`;
   }
 
-  function showDeleteSheet(msgId) {
+  window.showDeleteSheet = function(msgId) {
     document.getElementById('modal').innerHTML = `
       <div class="ov" onclick="if(event.target===this)closeModal()">
         <div class="sheet">
