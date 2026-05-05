@@ -696,7 +696,13 @@
     await Promise.all(batch);
   }
 
-  window.onKey = function(e) { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); window.sendMsg(); } };
+  window.onKey = function(e) {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      if (e.isComposing || e.keyCode === 229) return; // 한글 조합 중 무시
+      e.preventDefault();
+      window.sendMsg();
+    }
+  };
   window.autoResize = autoResize;
 
   // ── 입력 중 표시 ──
@@ -1328,7 +1334,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
           📷
           <input type="file" accept="image/*" style="display:none" onchange="uploadPhoto(this)">
         </label>
-        <textarea class="msg-textarea" id="msg-in" placeholder="메시지 입력..." rows="1" oninput="autoResize(this);onType()" onkeydown="onKey(event)"></textarea>
+        <textarea class="msg-textarea" id="msg-in" placeholder="메시지 입력..." rows="1" oninput="autoResize(this);onType()" onkeyup="onKey(event)"></textarea>
         <button class="send-fab" onclick="sendMsg()">➤</button>
       </div>
     </div>
