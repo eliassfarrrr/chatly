@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
- const firebaseConfig = {
+  const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -473,6 +473,9 @@
     renderChatList();
   };
 
+  let replyTo = null;
+  let editingMsgId = null;
+
   function renderMessages(msgs) {
     const el = document.getElementById('msgs');
     const wasBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
@@ -490,35 +493,70 @@
       const isMe = msg.senderCode === me.code;
       const row = document.createElement('div');
       row.className = 'msg-row' + (isMe ? ' me' : '');
+
+      const readMark = isMe
+        ? `<span class="read-mark">${msg.readBy?.includes(curFriend?.code) ? '읽음' : ''}</span>`
+        : '';
+
+      const replyHtml = msg.replyTo
+        ? `<div class="reply-quote ${isMe?'me':'them'}"><span class="reply-name">${esc(msg.replyTo.senderName)}</span><span class="reply-text">${esc((msg.replyTo.text||'사진/GIF').slice(0,40))}</span></div>`
+        : '';
+
+      const reactions = msg.reactions || {};
+      const reactionHtml = Object.entries(reactions).length
+        ? `<div class="reactions">${Object.entries(reactions).map(([emoji, users]) =>
+            `<span class="reaction ${users.includes(me.code)?'mine':''}" onclick="toggleReaction('${msg.id}','${emoji}')">${emoji} ${users.length}</span>`
+          ).join('')}</div>`
+        : '';
+
       const content = msg.gifUrl
         ? `<img src="${msg.gifUrl}" style="max-width:200px;border-radius:12px;display:block" alt="GIF">`
         : msg.imageUrl
         ? `<img src="${msg.imageUrl}" style="max-width:220px;border-radius:12px;display:block;cursor:pointer" alt="사진" onclick="window.open('${msg.imageUrl}','_blank')">`
-        : `<div class="bubble ${isMe ? 'me' : 'them'}">${esc(msg.text)}</div>`;
+        : `<div class="bubble ${isMe?'me':'them'}">${esc(msg.text)}${msg.edited?'<span class="edited-mark"> (수정됨)</span>':''}</div>`;
+
       if (!isMe) {
-        row.innerHTML = `<div class="msg-av-sm" style="background:${avColor(msg.senderCode)}">${ini(curFriend?.name||'?')}</div>${content}`;
+        row.innerHTML = `<div class="msg-av-sm" style="background:${avColor(msg.senderCode)}">${ini(curFriend?.name||'?')}</div><div class="msg-col">${replyHtml}${content}${reactionHtml}</div>`;
       } else {
-        row.innerHTML = content;
-        // 내 메시지 길게 누르면 삭제
-        if (msg.id) {
-          let pressTimer = null;
-          const bubble = row.querySelector('.bubble, img');
-          const startPress = () => {
-            pressTimer = setTimeout(() => showDeleteSheet(msg.id), 500);
-          };
-          const cancelPress = () => clearTimeout(pressTimer);
-          row.addEventListener('touchstart', startPress, { passive: true });
-          row.addEventListener('touchend', cancelPress);
-          row.addEventListener('touchmove', cancelPress);
-          row.addEventListener('mousedown', startPress);
-          row.addEventListener('mouseup', cancelPress);
-          row.addEventListener('mouseleave', cancelPress);
-        }
+        row.innerHTML = `<div class="msg-meta-right">${readMark}</div><div class="msg-col me">${replyHtml}${content}${reactionHtml}</div>`;
+      }
+
+      if (msg.id) {
+        let pressTimer = null;
+        const startPress = () => { pressTimer = setTimeout(() => showMsgActions(msg, isMe), 500); };
+        const cancelPress = () => clearTimeout(pressTimer);
+        row.addEventListener('touchstart', startPress, { passive: true });
+        row.addEventListener('touchend', cancelPress);
+        row.addEventListener('touchmove', cancelPress);
+        row.addEventListener('mousedown', startPress);
+        row.addEventListener('mouseup', cancelPress);
+        row.addEventListener('mouseleave', cancelPress);
       }
       el.appendChild(row);
     });
     if (!msgs.length) el.innerHTML = `<div class="empty-state"><div class="ei">👋</div><div>대화를 시작해보세요!</div></div>`;
     if (wasBottom || msgs[msgs.length-1]?.senderCode === me.code) el.scrollTop = el.scrollHeight;
+    if (curFriend) markRead(convKey(me.code, curFriend.code));
+  }
+
+  function showMsgActions(msg, isMe) {
+    const EMOJIS = ['👍','❤️','😂','😮','😢','🔥'];
+    const reactionBtns = EMOJIS.map(e =>
+      `<button onclick="toggleReaction('${msg.id}','${e}')" style="font-size:24px;background:none;border:none;cursor:pointer;padding:4px">${e}</button>`
+    ).join('');
+    document.getElementById('modal').innerHTML = `
+      <div class="ov" onclick="if(event.target===this)closeModal()">
+        <div class="sheet">
+          <div class="sheet-handle"></div>
+          <div style="display:flex;justify-content:center;gap:4px;margin-bottom:16px;background:var(--bg3);border-radius:14px;padding:10px">${reactionBtns}</div>
+          <div class="sheet-btns">
+            <button class="sht-btn sht-cancel" onclick="setReply('${msg.id}','${(msg.text||'사진/GIF').replace(/'/g,"\'")}','${(msg.senderName||'').replace(/'/g,"\'")}');closeModal()">↩ 답장</button>
+            ${isMe && msg.text ? `<button class="sht-btn sht-cancel" onclick="startEdit('${msg.id}','${msg.text.replace(/'/g,"\'")}');closeModal()">✏️ 수정</button>` : ''}
+            ${isMe ? `<button class="sht-btn sht-danger" onclick="closeModal();showDeleteSheet('${msg.id}')">🗑 삭제</button>` : ''}
+            <button class="sht-btn sht-cancel" onclick="closeModal()">취소</button>
+          </div>
+        </div>
+      </div>`;
   }
 
   function showDeleteSheet(msgId) {
@@ -535,6 +573,49 @@
         </div>
       </div>`;
   }
+
+  window.toggleReaction = async function(msgId, emoji) {
+    closeModal();
+    if (!curFriend || !me) return;
+    const ck = convKey(me.code, curFriend.code);
+    const msgRef = doc(db, 'conversations', ck, 'messages', msgId);
+    const snap = await getDoc(msgRef);
+    if (!snap.exists()) return;
+    const reactions = snap.data().reactions || {};
+    const users = reactions[emoji] || [];
+    if (users.includes(me.code)) {
+      reactions[emoji] = users.filter(u => u !== me.code);
+      if (!reactions[emoji].length) delete reactions[emoji];
+    } else {
+      reactions[emoji] = [...users, me.code];
+    }
+    await updateDoc(msgRef, { reactions });
+  };
+
+  window.setReply = function(id, text, senderName) {
+    replyTo = { id, text, senderName };
+    document.getElementById('reply-name').textContent = senderName;
+    document.getElementById('reply-text').textContent = text.slice(0, 50);
+    document.getElementById('reply-bar').style.display = 'flex';
+    document.getElementById('msg-in').focus();
+  };
+  window.cancelReply = function() {
+    replyTo = null;
+    document.getElementById('reply-bar').style.display = 'none';
+  };
+
+  window.startEdit = function(msgId, text) {
+    editingMsgId = msgId;
+    const inp = document.getElementById('msg-in');
+    inp.value = text; autoResize(inp); inp.focus();
+    document.getElementById('edit-bar').style.display = 'flex';
+  };
+  window.cancelEdit = function() {
+    editingMsgId = null;
+    document.getElementById('msg-in').value = '';
+    document.getElementById('msg-in').style.height = 'auto';
+    document.getElementById('edit-bar').style.display = 'none';
+  };
 
   window.deleteMsg = async function(msgId) {
     closeModal();
@@ -561,20 +642,50 @@
     if (!text || !curFriend || !me) return;
     inp.value = ''; inp.style.height = 'auto';
     const ck = convKey(me.code, curFriend.code);
+
+    // 수정 모드
+    if (editingMsgId) {
+      const msgRef = doc(db, 'conversations', ck, 'messages', editingMsgId);
+      await updateDoc(msgRef, { text, edited: true });
+      window.cancelEdit();
+      return;
+    }
+
     const msgsRef = collection(db, 'conversations', ck, 'messages');
-    await addDoc(msgsRef, { text, senderCode: me.code, senderName: me.name, createdAt: serverTimestamp() });
-    // 대화 메타데이터 업데이트
+    const msgData = {
+      text, senderCode: me.code, senderName: me.name,
+      createdAt: serverTimestamp(),
+      readBy: [me.code]
+    };
+    // 답장 데이터 포함
+    if (replyTo) {
+      msgData.replyTo = replyTo;
+      window.cancelReply();
+    }
+    await addDoc(msgsRef, msgData);
+    const convSnap = await getDoc(doc(db, 'conversations', ck));
     await setDoc(doc(db, 'conversations', ck), {
-      lastText: text,
-      lastAt: serverTimestamp(),
-      lastSenderCode: me.code,
-      [`unread.${curFriend.code}`]: (await getDoc(doc(db, 'conversations', ck))).data()?.unread?.[curFriend.code] + 1 || 1,
+      lastText: text, lastAt: serverTimestamp(), lastSenderCode: me.code,
+      [`unread.${curFriend.code}`]: (convSnap.data()?.unread?.[curFriend.code] || 0) + 1,
       [`unread.${me.code}`]: 0
     }, { merge: true });
   };
 
   async function markRead(ck) {
     await setDoc(doc(db, 'conversations', ck), { [`unread.${me.code}`]: 0 }, { merge: true });
+    // 상대방 메시지에 내 코드 readBy 추가
+    const snap = await getDocs(query(
+      collection(db, 'conversations', ck, 'messages'),
+      orderBy('createdAt', 'desc'), limit(30)
+    ));
+    const batch = [];
+    snap.docs.forEach(d => {
+      const data = d.data();
+      if (data.senderCode !== me.code && !(data.readBy||[]).includes(me.code)) {
+        batch.push(updateDoc(d.ref, { readBy: [...(data.readBy||[]), me.code] }));
+      }
+    });
+    await Promise.all(batch);
   }
 
   window.onKey = function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.sendMsg(); } };
@@ -994,6 +1105,37 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
 .empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--tx3);gap:10px;font-size:14px;padding:40px}
 .empty-state .ei{font-size:56px;margin-bottom:4px;opacity:.5}
 
+/* 읽음 표시 */
+.msg-meta-right{display:flex;flex-direction:column;align-items:flex-end;justify-content:flex-end;padding-bottom:4px}
+.read-mark{font-size:10px;color:var(--acc);white-space:nowrap;margin-right:4px}
+.msg-col{display:flex;flex-direction:column;gap:3px}
+.msg-col.me{align-items:flex-end}
+.edited-mark{font-size:10px;opacity:.6}
+
+/* 이모지 반응 */
+.reactions{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+.reaction{background:var(--bg3);border-radius:12px;padding:3px 8px;font-size:13px;cursor:pointer;border:1.5px solid transparent}
+.reaction.mine{border-color:var(--acc);background:rgba(88,101,242,.15)}
+.reaction:active{opacity:.7}
+
+/* 답장 인용 */
+.reply-quote{background:rgba(255,255,255,.06);border-left:3px solid var(--acc);border-radius:0 8px 8px 0;padding:5px 10px;margin-bottom:4px;max-width:220px}
+.reply-quote.me{border-left-color:#fff;background:rgba(255,255,255,.15)}
+.reply-name{display:block;font-size:11px;font-weight:700;color:var(--acc);margin-bottom:2px}
+.reply-quote.me .reply-name{color:#fff}
+.reply-text{font-size:12px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.reply-quote.me .reply-text{color:rgba(255,255,255,.7)}
+
+/* 답장/수정 바 */
+.reply-bar{background:var(--bg3);border-top:1px solid rgba(255,255,255,.06);padding:8px 14px;display:flex;align-items:center;justify-content:space-between;gap:10px}
+.reply-bar-content{display:flex;align-items:center;gap:8px;flex:1;min-width:0}
+.reply-bar-icon{font-size:16px;flex-shrink:0}
+.reply-bar-text{flex:1;min-width:0}
+.reply-bar-text .reply-name{font-size:12px;font-weight:700;color:var(--acc);display:block}
+.reply-bar-text .reply-text{font-size:12px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:block}
+.reply-bar-close{background:none;border:none;color:var(--tx3);font-size:18px;cursor:pointer;flex-shrink:0;padding:0 4px}
+.edit-bar .reply-bar-text .reply-name{color:var(--ylw)}
+
 /* GIF 피커 */
 .gif-btn{background:var(--bg3);border:none;color:var(--acc);font-size:12px;font-weight:700;padding:0 12px;border-radius:18px;cursor:pointer;height:38px;flex-shrink:0;letter-spacing:.5px}
 .gif-btn:active{background:var(--bg4)}
@@ -1112,6 +1254,25 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
     <div class="msgs" id="msgs"></div>
     <div class="tybar" id="tybar" style="display:none"><div class="tdots"><span></span><span></span><span></span></div><span id="ty-txt"></span></div>
     <div class="input-area">
+      <div class="reply-bar" id="reply-bar" style="display:none">
+        <div class="reply-bar-content">
+          <span class="reply-bar-icon">↩</span>
+          <div class="reply-bar-text">
+            <span class="reply-name" id="reply-name"></span>
+            <span class="reply-text" id="reply-text"></span>
+          </div>
+        </div>
+        <button class="reply-bar-close" onclick="cancelReply()">✕</button>
+      </div>
+      <div class="reply-bar edit-bar" id="edit-bar" style="display:none">
+        <div class="reply-bar-content">
+          <span class="reply-bar-icon">✏️</span>
+          <div class="reply-bar-text">
+            <span class="reply-name">메시지 수정 중</span>
+          </div>
+        </div>
+        <button class="reply-bar-close" onclick="cancelEdit()">✕</button>
+      </div>
       <div class="input-row">
         <button class="gif-btn" onclick="openGifPicker()" type="button">GIF</button>
         <label class="img-btn" title="사진 전송">
