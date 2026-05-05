@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
-   const firebaseConfig = {
+  const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -444,8 +444,21 @@
       const div = document.createElement('div');
       div.className = 'cl-item';
       div.onclick = () => openChat(f);
+
+      // 프로필 사진 + 온라인 상태 가져오기
+      const [codeSnap, presenceSnap] = await Promise.all([
+        getDoc(doc(db, 'codes', f.code)),
+        getDoc(doc(db, 'presence', f.code))
+      ]);
+      const photo = codeSnap.exists() ? codeSnap.data().photoUrl : null;
+      const isOnline = presenceSnap.exists() && presenceSnap.data().online;
+      const avStyle = photo
+        ? `background:${avColor(f.code)};background-image:url(${photo});background-size:cover;background-position:center`
+        : `background:${avColor(f.code)}`;
+      const avContent = photo ? '' : ini(f.name);
+
       div.innerHTML = `
-        <div class="cl-av" style="background:${avColor(f.code)}">${ini(f.name)}<span class="cl-online"></span></div>
+        <div class="cl-av" style="${avStyle}">${avContent}<span class="cl-online" style="background:${isOnline?'var(--grn)':'var(--tx3)'}"></span></div>
         <div class="cl-body">
           <div class="cl-top">
             <span class="cl-name">${esc(f.name)}</span>
@@ -855,13 +868,28 @@
   };
 
   // ── 친구 정보 시트 ──
-  window.openFriendSheet = function() {
+  window.openFriendSheet = async function() {
     if (!curFriend) return;
+    const [codeSnap, presenceSnap] = await Promise.all([
+      getDoc(doc(db, 'codes', curFriend.code)),
+      getDoc(doc(db, 'presence', curFriend.code))
+    ]);
+    const photo = codeSnap.exists() ? codeSnap.data().photoUrl : null;
+    const statusMsg = codeSnap.exists() ? codeSnap.data().statusMsg : null;
+    const isOnline = presenceSnap.exists() && presenceSnap.data().online;
+    const avHtml = photo
+      ? `<div style="width:72px;height:72px;border-radius:50%;background:${avColor(curFriend.code)};background-image:url(${photo});background-size:cover;background-position:center;margin:0 auto 10px"></div>`
+      : `<div style="width:72px;height:72px;border-radius:50%;background:${avColor(curFriend.code)};display:flex;align-items:center;justify-content:center;font-size:28px;font-weight:700;margin:0 auto 10px">${ini(curFriend.name)}</div>`;
     showSheet(`
       <div style="text-align:center;margin-bottom:20px">
-        <div style="width:64px;height:64px;border-radius:50%;background:${avColor(curFriend.code)};display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;margin:0 auto 10px">${ini(curFriend.name)}</div>
+        ${avHtml}
+        <div style="display:flex;align-items:center;justify-content:center;gap:6px;margin-bottom:6px">
+          <span style="width:8px;height:8px;border-radius:50%;background:${isOnline?'var(--grn)':'var(--tx3)'};display:inline-block"></span>
+          <span style="font-size:11px;color:${isOnline?'var(--grn)':'var(--tx3)'}">${isOnline?'온라인':'오프라인'}</span>
+        </div>
         <div style="font-size:18px;font-weight:700">${esc(curFriend.name)}</div>
-        <div style="font-size:12px;color:var(--tx3);letter-spacing:3px;margin-top:4px">${curFriend.code}</div>
+        <div style="font-size:12px;color:var(--tx3);letter-spacing:3px;margin:4px 0">${curFriend.code}</div>
+        ${statusMsg ? `<div style="font-size:13px;color:var(--tx2);margin-top:10px;padding:10px 16px;background:var(--bg3);border-radius:10px">${esc(statusMsg)}</div>` : ''}
       </div>
       <div class="sheet-btns">
         <button class="sht-btn sht-danger" onclick="confirmRemoveFriend('${curFriend.code}','${curFriend.uid||''}')">친구 삭제</button>
