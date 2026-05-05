@@ -351,6 +351,7 @@
   window.doLogout = async function() {
     closeModal();
     if (msgUnsub) { msgUnsub(); msgUnsub = null; }
+    if (friendsUnsub) { friendsUnsub(); friendsUnsub = null; }
     await signOut(auth);
     me = null; curFriend = null;
     document.getElementById('s-main').classList.remove('on');
@@ -371,6 +372,7 @@
     const pa = document.getElementById('prof-av');
     pa.textContent = ini(me.name); pa.style.background = avColor(me.code);
     renderChatList();
+    startFriendsListener();
   }
 
   // ── 탭 전환 ──
@@ -493,12 +495,60 @@
         row.innerHTML = `<div class="msg-av-sm" style="background:${avColor(msg.senderCode)}">${ini(curFriend?.name||'?')}</div>${content}`;
       } else {
         row.innerHTML = content;
+        // 내 메시지 길게 누르면 삭제
+        if (msg.id) {
+          let pressTimer = null;
+          const bubble = row.querySelector('.bubble, img');
+          const startPress = () => {
+            pressTimer = setTimeout(() => showDeleteSheet(msg.id), 500);
+          };
+          const cancelPress = () => clearTimeout(pressTimer);
+          row.addEventListener('touchstart', startPress, { passive: true });
+          row.addEventListener('touchend', cancelPress);
+          row.addEventListener('touchmove', cancelPress);
+          row.addEventListener('mousedown', startPress);
+          row.addEventListener('mouseup', cancelPress);
+          row.addEventListener('mouseleave', cancelPress);
+        }
       }
       el.appendChild(row);
     });
     if (!msgs.length) el.innerHTML = `<div class="empty-state"><div class="ei">👋</div><div>대화를 시작해보세요!</div></div>`;
     if (wasBottom || msgs[msgs.length-1]?.senderCode === me.code) el.scrollTop = el.scrollHeight;
   }
+
+  function showDeleteSheet(msgId) {
+    document.getElementById('modal').innerHTML = `
+      <div class="ov" onclick="if(event.target===this)closeModal()">
+        <div class="sheet">
+          <div class="sheet-handle"></div>
+          <h2>메시지 삭제</h2>
+          <p>이 메시지를 삭제할까요? 상대방 화면에서도 사라져요.</p>
+          <div class="sheet-btns">
+            <button class="sht-btn sht-danger" onclick="deleteMsg('${msgId}')">삭제</button>
+            <button class="sht-btn sht-cancel" onclick="closeModal()">취소</button>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  window.deleteMsg = async function(msgId) {
+    closeModal();
+    if (!curFriend || !me) return;
+    const ck = convKey(me.code, curFriend.code);
+    await deleteDoc(doc(db, 'conversations', ck, 'messages', msgId));
+    // 마지막 메시지가 삭제된 경우 미리보기 업데이트
+    const msgsSnap = await getDocs(query(
+      collection(db, 'conversations', ck, 'messages'),
+      orderBy('createdAt', 'desc'), limit(1)
+    ));
+    const last = msgsSnap.docs[0]?.data();
+    await setDoc(doc(db, 'conversations', ck), {
+      lastText: last ? (last.gifUrl ? 'GIF 🎞' : last.text) : '',
+      lastAt: last?.createdAt || serverTimestamp(),
+      lastSenderCode: last?.senderCode || me.code,
+    }, { merge: true });
+  };
 
   // ── 메시지 전송 ──
   window.sendMsg = async function() {
@@ -631,13 +681,24 @@
     window.closeChat(); closeModal(); renderChatList();
   };
 
-  // ── 친구 요청 알림 체크 ──
+  // ── 친구 요청 알림 체크 + 실시간 친구 추가 감지 ──
   async function checkReqBadge() {
     if (!me) return;
     const snap = await getDocs(query(collection(db, 'friendRequests'), where('to.uid','==',me.uid)));
     document.getElementById('noti-dot').style.display = snap.size > 0 ? 'block' : 'none';
   }
-  setInterval(() => { if (me) checkReqBadge(); }, 5000);
+
+  // 친구 목록 실시간 감지 → 재접속 없이 새 친구 바로 반영
+  let friendsUnsub = null;
+  function startFriendsListener() {
+    if (friendsUnsub) friendsUnsub();
+    const friendsRef = collection(db, 'users', me.uid, 'friends');
+    friendsUnsub = onSnapshot(friendsRef, () => {
+      renderChatList();
+    });
+  }
+
+  setInterval(() => { if (me) checkReqBadge(); }, 4000);
 
   // ── GIF 피커 ──
   window.openGifPicker = async function() {
@@ -887,10 +948,10 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
 .gif-picker{background:var(--bg2);border-radius:24px 24px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));animation:slideUp .25s ease}
 .gif-search{width:100%;background:var(--bg);border:1.5px solid rgba(255,255,255,.1);border-radius:12px;color:var(--tx);padding:11px 14px;font-size:14px;font-family:inherit;outline:none;margin-bottom:12px;-webkit-appearance:none}
 .gif-search:focus{border-color:var(--acc)}
-.gif-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;max-height:300px;overflow-y:auto}
+.gif-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;max-height:320px;overflow-y:auto}
 .gif-grid::-webkit-scrollbar{display:none}
-.gif-item{border-radius:10px;overflow:hidden;cursor:pointer;aspect-ratio:1;background:var(--bg3)}
-.gif-item img{width:100%;height:100%;object-fit:cover;display:block}
+.gif-item{border-radius:10px;overflow:hidden;cursor:pointer;background:var(--bg3)}
+.gif-item img{width:100%;height:auto;display:block;min-height:80px}
 .gif-item:active{opacity:.7}
 
 /* 토스트 */
