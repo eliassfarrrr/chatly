@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
-   const firebaseConfig = {
+  const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -519,9 +519,17 @@
     if (msgUnsub) { msgUnsub(); msgUnsub = null; }
     if (typingUnsub) { typingUnsub(); typingUnsub = null; }
     if (presenceUnsub) { presenceUnsub(); presenceUnsub = null; }
-    clearTyping();
+    // clearTyping 먼저 실행 후 curFriend 초기화
+    if (curFriend && me) {
+      const ck = convKey(me.code, curFriend.code);
+      deleteDoc(doc(db, 'typing', ck + '_' + me.code)).catch(() => {});
+    }
+    clearTimeout(typingTimer);
     document.getElementById('chat-screen').classList.remove('open');
     document.getElementById('tybar').style.display = 'none';
+    document.getElementById('reply-bar').style.display = 'none';
+    document.getElementById('edit-bar').style.display = 'none';
+    replyTo = null; editingMsgId = null;
     curFriend = null;
     renderChatList();
   };
