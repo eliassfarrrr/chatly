@@ -353,7 +353,9 @@
   window.doLogout = async function() {
     closeModal();
     if (msgUnsub) { msgUnsub(); msgUnsub = null; }
+    if (typingUnsub) { typingUnsub(); typingUnsub = null; }
     if (friendsUnsub) { friendsUnsub(); friendsUnsub = null; }
+    clearTyping();
     await signOut(auth);
     me = null; curFriend = null;
     document.getElementById('s-main').classList.remove('on');
@@ -461,6 +463,9 @@
       renderMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
     });
 
+    // 입력 중 리스너 시작
+    startTypingListener(ck);
+
     // 읽음 처리
     await markRead(ck);
     setTimeout(() => document.getElementById('msg-in').focus(), 300);
@@ -468,7 +473,10 @@
 
   window.closeChat = function() {
     if (msgUnsub) { msgUnsub(); msgUnsub = null; }
+    if (typingUnsub) { typingUnsub(); typingUnsub = null; }
+    clearTyping();
     document.getElementById('chat-screen').classList.remove('open');
+    document.getElementById('tybar').style.display = 'none';
     curFriend = null;
     renderChatList();
   };
@@ -690,6 +698,47 @@
 
   window.onKey = function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.sendMsg(); } };
   window.autoResize = autoResize;
+
+  // ── 입력 중 표시 ──
+  let typingTimer = null;
+  let typingUnsub = null;
+
+  window.onType = async function() {
+    if (!curFriend || !me) return;
+    const ck = convKey(me.code, curFriend.code);
+    // 내가 입력 중임을 Firestore에 저장
+    await setDoc(doc(db, 'typing', ck + '_' + me.code), {
+      code: me.code, name: me.name, ts: Date.now()
+    });
+    // 3초 후 자동 삭제
+    clearTimeout(typingTimer);
+    typingTimer = setTimeout(clearTyping, 3000);
+  };
+
+  async function clearTyping() {
+    if (!curFriend || !me) return;
+    const ck = convKey(me.code, curFriend.code);
+    try { await deleteDoc(doc(db, 'typing', ck + '_' + me.code)); } catch {}
+  }
+
+  function startTypingListener(ck) {
+    if (typingUnsub) { typingUnsub(); typingUnsub = null; }
+    // 상대방 입력 중 감지
+    typingUnsub = onSnapshot(doc(db, 'typing', ck + '_' + curFriend.code), snap => {
+      const tb = document.getElementById('tybar');
+      const tt = document.getElementById('ty-txt');
+      if (snap.exists()) {
+        const data = snap.data();
+        // 4초 이내 데이터만 유효
+        if (Date.now() - data.ts < 4000) {
+          tt.textContent = data.name + ' 입력 중...';
+          tb.style.display = 'flex';
+          return;
+        }
+      }
+      tb.style.display = 'none';
+    });
+  }
 
   // ── 친구 추가 ──
   window.openAddSheet = function() {
@@ -1279,7 +1328,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
           📷
           <input type="file" accept="image/*" style="display:none" onchange="uploadPhoto(this)">
         </label>
-        <textarea class="msg-textarea" id="msg-in" placeholder="메시지 입력..." rows="1" oninput="autoResize(this)" onkeydown="onKey(event)"></textarea>
+        <textarea class="msg-textarea" id="msg-in" placeholder="메시지 입력..." rows="1" oninput="autoResize(this);onType()" onkeydown="onKey(event)"></textarea>
         <button class="send-fab" onclick="sendMsg()">➤</button>
       </div>
     </div>
