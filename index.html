@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
-  const firebaseConfig = {
+   const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -905,9 +905,15 @@
 
   window.acceptReq = async function(docId, fromUid, fromName, fromCode) {
     await deleteDoc(doc(db, 'friendRequests', docId));
-    // 양방향 친구 추가
+    // 양방향 친구 추가 - 상대방 정보도 codes에서 가져와서 저장
     await setDoc(doc(db, 'users', me.uid, 'friends', fromCode), { uid: fromUid, name: fromName, code: fromCode });
     await setDoc(doc(db, 'users', fromUid, 'friends', me.code), { uid: me.uid, name: me.name, code: me.code });
+    // 수락 알림을 위한 notification 저장 (요청 보낸 사람이 감지)
+    await setDoc(doc(db, 'notifications', fromUid + '_' + me.uid), {
+      type: 'friendAccepted',
+      from: { uid: me.uid, name: me.name, code: me.code },
+      createdAt: serverTimestamp()
+    });
     toast(fromName + '과 친구가 됐어요! 🎉');
     closeModal(); renderChatList();
   };
@@ -1104,7 +1110,48 @@
     });
   }
 
-  setInterval(() => { if (me) checkReqBadge(); }, 4000);
+  // 친구 요청 수락 확인 (요청 보낸 쪽에서 수락됐는지 체크)
+  async function checkAccepted() {
+    if (!me) return;
+    const snap = await getDocs(query(
+      collection(db, 'friendRequests'),
+      where('from.uid', '==', me.uid)
+    ));
+    // 내가 보낸 요청이 수락돼서 상대방 friends에 내가 추가됐는지 확인
+    const fs = await getFriends();
+    for (const reqDoc of snap.docs) {
+      const toUid = reqDoc.data().to.uid;
+      const toCode = reqDoc.data().to.code;
+      // 상대방 friends 목록에 내가 있으면 수락된 것
+      const friendSnap = await getDoc(doc(db, 'users', toUid, 'friends', me.code));
+      if (friendSnap.exists() && !fs.find(f => f.code === friendSnap.data().code || f.uid === toUid)) {
+        // 내 친구 목록에도 추가
+        const codeSnap = await getDoc(doc(db, 'codes', reqDoc.data().to.code || ''));
+        const targetInfo = codeSnap.exists() ? codeSnap.data() : reqDoc.data().to;
+        await setDoc(doc(db, 'users', me.uid, 'friends', targetInfo.code || ''), {
+          uid: toUid, name: targetInfo.name, code: targetInfo.code
+        });
+        toast(targetInfo.name + '이 친구 요청을 수락했어요! 🎉');
+      }
+    }
+  }
+
+  setInterval(() => { if (me) { checkReqBadge(); checkNotifications(); } }, 4000);
+
+  // 수락 알림 체크
+  async function checkNotifications() {
+    if (!me) return;
+    const snap = await getDocs(query(
+      collection(db, 'notifications'),
+      where('type', '==', 'friendAccepted')
+    ));
+    for (const d of snap.docs) {
+      if (!d.id.startsWith(me.uid + '_')) continue;
+      const { from } = d.data();
+      toast(from.name + '이 친구 요청을 수락했어요! 🎉');
+      await deleteDoc(d.ref);
+    }
+  }
 
   // ── 사진 업로드 (Cloudinary) ──
   window.uploadPhoto = async function(input) {
