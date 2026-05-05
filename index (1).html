@@ -1,0 +1,922 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#1a1b1e">
+<title>Chatly</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;700&display=swap" rel="stylesheet">
+
+<!-- Firebase SDK -->
+<script type="module">
+  import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+  import {
+    getAuth,
+    createUserWithEmailAndPassword,
+    signInWithEmailAndPassword,
+    signOut,
+    onAuthStateChanged
+  } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js';
+  import {
+    getFirestore,
+    doc, getDoc, setDoc, updateDoc, deleteDoc,
+    collection, query, where, orderBy, limit,
+    onSnapshot, addDoc, serverTimestamp, getDocs
+  } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
+
+  // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
+ const firebaseConfig = {
+  apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
+  authDomain: "chatly-app-5398e.firebaseapp.com",
+  projectId: "chatly-app-5398e",
+  storageBucket: "chatly-app-5398e.firebasestorage.app",
+  messagingSenderId: "422608532159",
+  appId: "1:422608532159:web:b623fc75dd07ecbcc80c0a"
+};
+
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  // ── 전역 상태 ──
+  let me = null;          // { uid, id, name, code }
+  let curFriend = null;   // { uid, code, name }
+  let msgUnsub = null;    // Firestore 실시간 리스너 해제 함수
+  let captchaAnswer = null;
+  let captchaType = null;
+  let captchaPassed = false;
+
+  // ── 유틸 ──
+  function genCode() {
+    const c = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    return Array.from({ length: 6 }, () => c[Math.random() * c.length | 0]).join('');
+  }
+  function avColor(code) {
+    const p = ['#5865f2','#ed4245','#23a559','#f0b232','#e67e22','#9b59b6','#1abc9c','#e91e63'];
+    let h = 0; for (const c of (code||'')) h = (h * 31 + c.charCodeAt(0)) & 0xffff;
+    return p[h % p.length];
+  }
+  function ini(n) { return (n||'?').charAt(0).toUpperCase(); }
+  function esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+  function convKey(a, b) { return [a, b].sort().join('_'); }
+  function toast(msg, col = '#23a559') {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.style.background = col;
+    t.classList.add('on'); setTimeout(() => t.classList.remove('on'), 2500);
+  }
+  function fmtTime(ts) {
+    if (!ts) return '';
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    const h = d.getHours(), m = d.getMinutes();
+    return `${h < 12 ? '오전' : '오후'} ${h > 12 ? h - 12 : h || 12}:${String(m).padStart(2, '0')}`;
+  }
+  function fmtDate(ts) {
+    if (!ts) return '';
+    const d = ts.toDate ? ts.toDate() : new Date(ts);
+    return `${d.getMonth() + 1}월 ${d.getDate()}일`;
+  }
+  function autoResize(el) {
+    el.style.height = 'auto';
+    el.style.height = Math.min(el.scrollHeight, 100) + 'px';
+  }
+  function pwChecks(pw) {
+    return {
+      len: pw.length >= 8,
+      letter: /[a-zA-Z]/.test(pw),
+      number: /[0-9]/.test(pw),
+      special: /[!@#$%^&*()_+\-=\[\]{};':"\\|,.<>\/?~`]/.test(pw)
+    };
+  }
+
+  // ── 비밀번호 강도 체크 ──
+  window.checkPwStrength = function() {
+    const pw = document.getElementById('su-pw').value;
+    const c = pwChecks(pw);
+    ['len','letter','number','special'].forEach(k => {
+      const el = document.getElementById('chk-' + k);
+      if (c[k]) el.classList.add('ok'); else el.classList.remove('ok');
+    });
+    const score = Object.values(c).filter(Boolean).length;
+    for (let i = 1; i <= 4; i++) {
+      const bar = document.getElementById('pw-bar' + i);
+      bar.className = 'pw-bar';
+      if (i <= score) bar.classList.add('s' + score);
+    }
+    const inp = document.getElementById('su-pw');
+    if (!pw) inp.classList.remove('valid','invalid');
+    else if (score === 4) inp.classList.add('valid'), inp.classList.remove('invalid');
+    else inp.classList.add('invalid'), inp.classList.remove('valid');
+    window.checkPwMatch();
+  };
+  window.checkPwMatch = function() {
+    const pw = document.getElementById('su-pw').value;
+    const pw2 = document.getElementById('su-pw2').value;
+    const inp2 = document.getElementById('su-pw2');
+    if (!pw2) { inp2.classList.remove('valid','invalid'); return; }
+    if (pw === pw2) inp2.classList.add('valid'), inp2.classList.remove('invalid');
+    else inp2.classList.add('invalid'), inp2.classList.remove('valid');
+  };
+
+  // ── 캡차 ──
+  window.newCaptcha = function() {
+    captchaPassed = false;
+    document.getElementById('signup-btn').disabled = true;
+    document.getElementById('cap-status').style.display = 'none';
+    document.getElementById('cap-label').innerHTML = '🤖 로봇 인증';
+    const types = ['text','math','slider'];
+    captchaType = types[Math.floor(Math.random() * types.length)];
+    const el = document.getElementById('captcha-content');
+    if (captchaType === 'text') renderTextCaptcha(el);
+    else if (captchaType === 'math') renderMathCaptcha(el);
+    else renderSliderCaptcha(el);
+  };
+
+  function renderTextCaptcha(el) {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+    let code = ''; for (let i = 0; i < 5; i++) code += chars[Math.floor(Math.random() * chars.length)];
+    captchaAnswer = code;
+    el.innerHTML = `<div class="captcha-img-wrap"><canvas id="cap-canvas" class="captcha-canvas" width="260" height="65"></canvas></div>
+      <input class="captcha-input" id="cap-input" placeholder="위 글자 입력" maxlength="5" oninput="checkTextCaptcha()" autocomplete="off">`;
+    const c = document.getElementById('cap-canvas'); if (!c) return;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, 260, 65);
+    for (let i = 0; i < 8; i++) {
+      ctx.strokeStyle = `rgba(${Math.random()*100|0},${Math.random()*100|0},${Math.random()*100|0},0.3)`;
+      ctx.lineWidth = 1; ctx.beginPath();
+      ctx.moveTo(Math.random()*260, Math.random()*65);
+      ctx.lineTo(Math.random()*260, Math.random()*65);
+      ctx.stroke();
+    }
+    for (let i = 0; i < 80; i++) {
+      ctx.fillStyle = `rgba(${Math.random()*150|0},${Math.random()*150|0},${Math.random()*150|0},0.5)`;
+      ctx.fillRect(Math.random()*260, Math.random()*65, 2, 2);
+    }
+    const colors = ['#2c3e50','#8e44ad','#c0392b','#d35400','#16a085'];
+    for (let i = 0; i < code.length; i++) {
+      ctx.save();
+      ctx.translate(30 + i * 44, 44 + (Math.random()*8-4));
+      ctx.rotate(Math.random()*0.6-0.3);
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.font = `bold ${28+(Math.random()*4|0)}px Georgia, serif`;
+      ctx.fillText(code[i], 0, 0); ctx.restore();
+    }
+    ctx.strokeStyle = 'rgba(100,100,100,0.4)'; ctx.lineWidth = 1.5; ctx.beginPath();
+    for (let x = 0; x < 260; x += 2) { const y = 32 + Math.sin(x * 0.1) * 8; if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y); }
+    ctx.stroke();
+  }
+  window.checkTextCaptcha = function() {
+    const v = document.getElementById('cap-input').value.toUpperCase();
+    const status = document.getElementById('cap-status');
+    if (v.length < 5) { status.style.display = 'none'; return; }
+    if (v === captchaAnswer) {
+      captchaPassed = true;
+      status.className = 'cap-status ok'; status.textContent = '✓ 인증 완료'; status.style.display = 'block';
+      document.getElementById('cap-label').innerHTML = '🤖 로봇 인증 <span style="color:var(--grn)">✓</span>';
+      document.getElementById('signup-btn').disabled = false;
+    } else {
+      captchaPassed = false;
+      status.className = 'cap-status err'; status.textContent = '✗ 글자가 다릅니다'; status.style.display = 'block';
+      document.getElementById('signup-btn').disabled = true;
+    }
+  };
+
+  function renderMathCaptcha(el) {
+    const ops = ['+','-','×']; const op = ops[Math.floor(Math.random()*ops.length)];
+    let a, b, answer;
+    if (op==='+') { a=Math.floor(Math.random()*40)+10; b=Math.floor(Math.random()*40)+10; answer=a+b; }
+    else if (op==='-') { a=Math.floor(Math.random()*50)+30; b=Math.floor(Math.random()*20)+5; answer=a-b; }
+    else { a=Math.floor(Math.random()*9)+2; b=Math.floor(Math.random()*9)+2; answer=a*b; }
+    captchaAnswer = String(answer);
+    el.innerHTML = `<div class="math-q">${a} ${op} ${b} = ?</div>
+      <input class="math-input" id="cap-input" placeholder="정답" type="number" oninput="checkMathCaptcha()" autocomplete="off">`;
+  }
+  window.checkMathCaptcha = function() {
+    const v = document.getElementById('cap-input').value.trim();
+    const status = document.getElementById('cap-status');
+    if (!v) { status.style.display='none'; captchaPassed=false; document.getElementById('signup-btn').disabled=true; return; }
+    if (v === captchaAnswer) {
+      captchaPassed=true; status.className='cap-status ok'; status.textContent='✓ 인증 완료'; status.style.display='block';
+      document.getElementById('cap-label').innerHTML='🤖 로봇 인증 <span style="color:var(--grn)">✓</span>';
+      document.getElementById('signup-btn').disabled=false;
+    } else { captchaPassed=false; document.getElementById('signup-btn').disabled=true; status.style.display='none'; }
+  };
+
+  function renderSliderCaptcha(el) {
+    const maxX = 280, targetX = Math.floor(Math.random()*(maxX-120))+80;
+    captchaAnswer = targetX;
+    el.innerHTML = `<div class="slider-wrap">
+      <div class="slider-track">
+        <div class="slider-target" style="left:${targetX+19}px">목표</div>
+        <div class="slider-puzzle" id="slider-puzzle">→</div>
+      </div>
+      <div class="slider-hint">파란 원을 목표 위치로 드래그하세요</div>
+    </div>`;
+    const puzzle = document.getElementById('slider-puzzle');
+    let dragging=false, startX=0, startLeft=0;
+    const onDown = e => { dragging=true; const t=e.touches?e.touches[0]:e; startX=t.clientX; startLeft=parseFloat(puzzle.style.left||0); e.preventDefault(); };
+    const onMove = e => { if(!dragging) return; const t=e.touches?e.touches[0]:e; let nl=startLeft+(t.clientX-startX); nl=Math.max(0,Math.min(maxX,nl)); puzzle.style.left=nl+'px'; };
+    const onUp = () => {
+      if(!dragging) return; dragging=false;
+      const fl = parseFloat(puzzle.style.left||0);
+      const status = document.getElementById('cap-status');
+      if (Math.abs(fl-targetX)<10) {
+        captchaPassed=true; puzzle.classList.add('success'); puzzle.innerHTML='✓'; puzzle.style.left=targetX+'px';
+        status.className='cap-status ok'; status.textContent='✓ 인증 완료'; status.style.display='block';
+        document.getElementById('cap-label').innerHTML='🤖 로봇 인증 <span style="color:var(--grn)">✓</span>';
+        document.getElementById('signup-btn').disabled=false;
+      } else {
+        status.className='cap-status err'; status.textContent='✗ 다시 시도하세요'; status.style.display='block';
+        setTimeout(() => { puzzle.style.left='0px'; status.style.display='none'; }, 1200);
+      }
+    };
+    puzzle.addEventListener('mousedown', onDown);
+    puzzle.addEventListener('touchstart', onDown, { passive: false });
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('touchmove', onMove, { passive: false });
+    document.addEventListener('mouseup', onUp);
+    document.addEventListener('touchend', onUp);
+  }
+
+  // ── 화면 전환 ──
+  window.showSignup = function() {
+    document.getElementById('s-login').classList.remove('on');
+    document.getElementById('s-signup').classList.add('on');
+    document.getElementById('su-err').textContent='';
+    window.newCaptcha();
+  };
+  window.showLogin = function() {
+    document.getElementById('s-signup').classList.remove('on');
+    document.getElementById('s-login').classList.add('on');
+    document.getElementById('login-err').textContent='';
+  };
+
+  // ── 회원가입 ──
+  window.doSignup = async function() {
+    if (!captchaPassed) { document.getElementById('su-err').textContent='로봇 인증을 먼저 완료해주세요.'; return; }
+    const id = document.getElementById('su-id').value.trim().toLowerCase();
+    const name = document.getElementById('su-name').value.trim();
+    const pw = document.getElementById('su-pw').value;
+    const pw2 = document.getElementById('su-pw2').value;
+    const err = document.getElementById('su-err');
+    if (!/^[a-z0-9_]{4,16}$/.test(id)) { err.textContent='아이디는 영문 소문자/숫자/_ 4~16자예요.'; return; }
+    if (name.length < 2) { err.textContent='닉네임은 2자 이상이어야 해요.'; return; }
+    const c = pwChecks(pw);
+    if (!c.len) { err.textContent='비밀번호는 8자 이상이어야 해요.'; return; }
+    if (!c.letter) { err.textContent='비밀번호에 영문이 포함돼야 해요.'; return; }
+    if (!c.number) { err.textContent='비밀번호에 숫자가 포함돼야 해요.'; return; }
+    if (!c.special) { err.textContent='비밀번호에 특수문자가 포함돼야 해요.'; return; }
+    if (pw !== pw2) { err.textContent='비밀번호가 일치하지 않아요.'; return; }
+
+    err.textContent='가입 중...';
+    try {
+      // 아이디 중복 확인
+      const idDoc = await getDoc(doc(db, 'usernames', id));
+      if (idDoc.exists()) { err.textContent='이미 사용 중인 아이디예요.'; window.newCaptcha(); return; }
+
+      // Firebase Auth로 계정 생성 (이메일 형식 맞추기 위해 @chatly.app 붙임)
+      const credential = await createUserWithEmailAndPassword(auth, `${id}@chatly.app`, pw);
+      const uid = credential.user.uid;
+
+      // 고유 코드 생성
+      let code;
+      for (let i = 0; i < 10; i++) {
+        code = genCode();
+        const codeDoc = await getDoc(doc(db, 'codes', code));
+        if (!codeDoc.exists()) break;
+      }
+
+      // Firestore에 사용자 정보 저장
+      await setDoc(doc(db, 'users', uid), { id, name, code, createdAt: serverTimestamp() });
+      await setDoc(doc(db, 'usernames', id), { uid, code });
+      await setDoc(doc(db, 'codes', code), { uid, name, id });
+
+      me = { uid, id, name, code };
+      toast('가입 완료! 코드: ' + code);
+      enterApp();
+    } catch (e) {
+      console.error(e);
+      if (e.code === 'auth/email-already-in-use') err.textContent='이미 사용 중인 아이디예요.';
+      else err.textContent='오류가 발생했어요: ' + e.message;
+      window.newCaptcha();
+    }
+  };
+
+  // ── 로그인 ──
+  window.doLogin = async function() {
+    const id = document.getElementById('login-id').value.trim().toLowerCase();
+    const pw = document.getElementById('login-pw').value;
+    const err = document.getElementById('login-err');
+    if (!id || !pw) { err.textContent='아이디와 비밀번호를 입력하세요.'; return; }
+    err.textContent='로그인 중...';
+    try {
+      await signInWithEmailAndPassword(auth, `${id}@chatly.app`, pw);
+      // onAuthStateChanged 에서 enterApp 호출
+    } catch (e) {
+      if (e.code === 'auth/user-not-found' || e.code === 'auth/invalid-credential') err.textContent='아이디 또는 비밀번호가 틀렸어요.';
+      else err.textContent='로그인 실패: ' + e.message;
+    }
+  };
+
+  // ── 자동 로그인 (Auth 상태 감지) ──
+  onAuthStateChanged(auth, async user => {
+    if (user) {
+      const userDoc = await getDoc(doc(db, 'users', user.uid));
+      if (userDoc.exists()) {
+        const d = userDoc.data();
+        me = { uid: user.uid, id: d.id, name: d.name, code: d.code };
+        enterApp();
+      }
+    } else {
+      me = null;
+      document.getElementById('s-main').classList.remove('on');
+      document.getElementById('s-login').classList.add('on');
+    }
+  });
+
+  // ── 로그아웃 ──
+  window.openLogoutSheet = function() {
+    showSheet(`
+      <h2>로그아웃</h2>
+      <p>정말 로그아웃 하시겠어요?</p>
+      <div class="sheet-btns">
+        <button class="sht-btn sht-danger" onclick="doLogout()">로그아웃</button>
+        <button class="sht-btn sht-cancel" onclick="closeModal()">취소</button>
+      </div>`);
+  };
+  window.doLogout = async function() {
+    closeModal();
+    if (msgUnsub) { msgUnsub(); msgUnsub = null; }
+    await signOut(auth);
+    me = null; curFriend = null;
+    document.getElementById('s-main').classList.remove('on');
+    document.getElementById('s-login').classList.add('on');
+    document.getElementById('login-id').value='';
+    document.getElementById('login-pw').value='';
+    document.getElementById('chat-list').innerHTML='';
+    toast('로그아웃 되었어요');
+  };
+
+  // ── 앱 진입 ──
+  function enterApp() {
+    document.getElementById('s-login').classList.remove('on');
+    document.getElementById('s-signup').classList.remove('on');
+    document.getElementById('s-main').classList.add('on');
+    document.getElementById('prof-name').textContent = me.name;
+    document.getElementById('prof-code').textContent = '코드: ' + me.code;
+    const pa = document.getElementById('prof-av');
+    pa.textContent = ini(me.name); pa.style.background = avColor(me.code);
+    renderChatList();
+  }
+
+  // ── 탭 전환 ──
+  window.switchTab = function(tab) {
+    document.querySelectorAll('.tab-page').forEach(p => p.classList.remove('on'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('on'));
+    document.getElementById('tab-' + tab).classList.add('on');
+    document.getElementById('tbtn-' + tab).classList.add('on');
+  };
+
+  window.copyCode = function() {
+    navigator.clipboard.writeText(me.code).catch(() => {});
+    toast('코드 복사됨: ' + me.code);
+  };
+
+  // ── 친구 목록 (Firestore) ──
+  async function getFriends() {
+    const snap = await getDocs(collection(db, 'users', me.uid, 'friends'));
+    return snap.docs.map(d => ({ code: d.id, ...d.data() }));
+  }
+
+  async function renderChatList() {
+    if (!me) return;
+    const friends = await getFriends();
+    const el = document.getElementById('chat-list');
+    el.innerHTML = '';
+    if (!friends.length) {
+      el.innerHTML = `<div class="empty-state">
+        <div class="ei">💬</div>
+        <div>아직 대화 상대가 없어요</div>
+        <button onclick="openAddSheet()" class="add-btn">+ 친구 추가</button>
+      </div>`;
+      return;
+    }
+    let totalUnread = 0;
+    for (const f of friends) {
+      const ck = convKey(me.code, f.code);
+      const convRef = doc(db, 'conversations', ck);
+      const convSnap = await getDoc(convRef);
+      const lastMsg = convSnap.exists() ? convSnap.data() : null;
+      const preview = lastMsg?.lastText ? (lastMsg.lastSenderCode === me.code ? '나: ' + lastMsg.lastText : lastMsg.lastText) : '대화를 시작해보세요';
+      const unread = lastMsg?.unread?.[me.code] || 0;
+      totalUnread += unread;
+      const timeStr = lastMsg?.lastAt ? fmtTime(lastMsg.lastAt) : '';
+      const div = document.createElement('div');
+      div.className = 'cl-item';
+      div.onclick = () => openChat(f);
+      div.innerHTML = `
+        <div class="cl-av" style="background:${avColor(f.code)}">${ini(f.name)}<span class="cl-online"></span></div>
+        <div class="cl-body">
+          <div class="cl-top">
+            <span class="cl-name">${esc(f.name)}</span>
+            <span class="cl-time">${timeStr}</span>
+          </div>
+          <div class="cl-bottom">
+            <span class="cl-preview">${esc(preview.slice(0,32))}</span>
+            ${unread>0 ? `<span class="cl-badge">${unread}</span>` : ''}
+          </div>
+        </div>`;
+      el.appendChild(div);
+    }
+    const badge = document.getElementById('tab-badge');
+    badge.textContent = totalUnread || '';
+    badge.style.display = totalUnread ? 'block' : 'none';
+  }
+
+  // ── 채팅 열기 ──
+  window.openChat = async function(f) {
+    curFriend = f;
+    if (msgUnsub) { msgUnsub(); msgUnsub = null; }
+    document.getElementById('ct-name').textContent = f.name;
+    const ca = document.getElementById('ct-av');
+    ca.textContent = ini(f.name); ca.style.background = avColor(f.code);
+    document.getElementById('msg-in').value = '';
+    document.getElementById('msg-in').style.height = 'auto';
+    document.getElementById('chat-screen').classList.add('open');
+
+    const ck = convKey(me.code, f.code);
+    const msgsRef = collection(db, 'conversations', ck, 'messages');
+    const q = query(msgsRef, orderBy('createdAt', 'asc'), limit(100));
+
+    // 실시간 리스너
+    msgUnsub = onSnapshot(q, snap => {
+      renderMessages(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+
+    // 읽음 처리
+    await markRead(ck);
+    setTimeout(() => document.getElementById('msg-in').focus(), 300);
+  };
+
+  window.closeChat = function() {
+    if (msgUnsub) { msgUnsub(); msgUnsub = null; }
+    document.getElementById('chat-screen').classList.remove('open');
+    curFriend = null;
+    renderChatList();
+  };
+
+  function renderMessages(msgs) {
+    const el = document.getElementById('msgs');
+    const wasBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    el.innerHTML = '';
+    let lastDay = '';
+    msgs.forEach(msg => {
+      const day = fmtDate(msg.createdAt);
+      if (day !== lastDay) {
+        lastDay = day;
+        const dt = document.createElement('div');
+        dt.className = 'msg-time-row';
+        dt.textContent = day;
+        el.appendChild(dt);
+      }
+      const isMe = msg.senderCode === me.code;
+      const row = document.createElement('div');
+      row.className = 'msg-row' + (isMe ? ' me' : '');
+      if (!isMe) {
+        row.innerHTML = `<div class="msg-av-sm" style="background:${avColor(msg.senderCode)}">${ini(curFriend?.name||'?')}</div><div class="bubble them">${esc(msg.text)}</div>`;
+      } else {
+        row.innerHTML = `<div class="bubble me">${esc(msg.text)}</div>`;
+      }
+      el.appendChild(row);
+    });
+    if (!msgs.length) el.innerHTML = `<div class="empty-state"><div class="ei">👋</div><div>대화를 시작해보세요!</div></div>`;
+    if (wasBottom || msgs[msgs.length-1]?.senderCode === me.code) el.scrollTop = el.scrollHeight;
+  }
+
+  // ── 메시지 전송 ──
+  window.sendMsg = async function() {
+    const inp = document.getElementById('msg-in');
+    const text = inp.value.trim();
+    if (!text || !curFriend || !me) return;
+    inp.value = ''; inp.style.height = 'auto';
+    const ck = convKey(me.code, curFriend.code);
+    const msgsRef = collection(db, 'conversations', ck, 'messages');
+    await addDoc(msgsRef, { text, senderCode: me.code, senderName: me.name, createdAt: serverTimestamp() });
+    // 대화 메타데이터 업데이트
+    await setDoc(doc(db, 'conversations', ck), {
+      lastText: text,
+      lastAt: serverTimestamp(),
+      lastSenderCode: me.code,
+      [`unread.${curFriend.code}`]: (await getDoc(doc(db, 'conversations', ck))).data()?.unread?.[curFriend.code] + 1 || 1,
+      [`unread.${me.code}`]: 0
+    }, { merge: true });
+  };
+
+  async function markRead(ck) {
+    await setDoc(doc(db, 'conversations', ck), { [`unread.${me.code}`]: 0 }, { merge: true });
+  }
+
+  window.onKey = function(e) { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); window.sendMsg(); } };
+  window.autoResize = autoResize;
+
+  // ── 친구 추가 ──
+  window.openAddSheet = function() {
+    showSheet(`
+      <h2>친구 추가</h2>
+      <p>친구의 6자리 코드를 입력하세요.<br>
+      내 코드: <strong style="color:var(--acc);letter-spacing:2px">${me.code}</strong>
+      <span onclick="copyCode()" style="color:var(--acc);cursor:pointer;font-size:12px">(복사)</span></p>
+      <input class="mi2" id="fc-inp" placeholder="예: ABC123" maxlength="6"
+        style="text-transform:uppercase;letter-spacing:4px;text-align:center;font-size:20px;font-weight:700"
+        oninput="this.value=this.value.toUpperCase()">
+      <div class="em2" id="add-err"></div>
+      <div class="sheet-btns">
+        <button class="sht-btn sht-ok" onclick="doAdd()">요청 보내기</button>
+        <button class="sht-btn sht-cancel" onclick="closeModal()">취소</button>
+      </div>`);
+    setTimeout(() => document.getElementById('fc-inp')?.focus(), 100);
+  };
+
+  window.doAdd = async function() {
+    const code = document.getElementById('fc-inp').value.trim().toUpperCase();
+    const err = document.getElementById('add-err');
+    if (code.length !== 6) { err.textContent='코드는 6자리예요.'; return; }
+    if (code === me.code) { err.textContent='자기 자신에게는 요청할 수 없어요.'; return; }
+    err.textContent='검색 중...';
+    const codeSnap = await getDoc(doc(db, 'codes', code));
+    if (!codeSnap.exists()) { err.textContent='해당 코드의 사용자를 찾을 수 없어요.'; return; }
+    const target = codeSnap.data();
+    // 친구 요청 전송
+    await setDoc(doc(db, 'friendRequests', `${target.uid}_${me.uid}`), {
+      from: { uid: me.uid, name: me.name, code: me.code },
+      to: { uid: target.uid },
+      createdAt: serverTimestamp()
+    });
+    toast('친구 요청을 보냈어요! ✉');
+    closeModal();
+  };
+
+  // ── 친구 요청 확인 ──
+  window.openReqSheet = async function() {
+    const snap = await getDocs(query(collection(db, 'friendRequests'), where('to.uid','==',me.uid)));
+    const reqs = snap.docs.map(d => ({ docId: d.id, ...d.data() }));
+    document.getElementById('noti-dot').style.display = reqs.length ? 'block' : 'none';
+    showSheet(`
+      <h2>친구 요청</h2>
+      <p>나에게 온 친구 요청이에요.</p>
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:16px">
+        ${!reqs.length ? '<div style="text-align:center;color:var(--tx3);padding:16px">대기 중인 요청이 없어요</div>' :
+          reqs.map(r => `
+            <div style="background:var(--bg3);border-radius:12px;padding:12px;display:flex;align-items:center;gap:12px">
+              <div style="width:38px;height:38px;border-radius:50%;background:${avColor(r.from.code)};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:15px;flex-shrink:0">${ini(r.from.name)}</div>
+              <div style="flex:1"><div style="font-weight:700">${esc(r.from.name)}</div><div style="font-size:12px;color:var(--tx3)">${r.from.code}</div></div>
+              <button onclick="acceptReq('${r.docId}','${r.from.uid}','${esc(r.from.name)}','${r.from.code}')"
+                style="background:var(--grn);border:none;color:#fff;padding:7px 14px;border-radius:8px;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;margin-right:4px">수락</button>
+              <button onclick="declineReq('${r.docId}')"
+                style="background:var(--red);border:none;color:#fff;padding:7px 14px;border-radius:8px;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer">거절</button>
+            </div>`).join('')}
+      </div>
+      <button class="sht-btn sht-cancel" onclick="closeModal()">닫기</button>`);
+  };
+
+  window.acceptReq = async function(docId, fromUid, fromName, fromCode) {
+    await deleteDoc(doc(db, 'friendRequests', docId));
+    // 양방향 친구 추가
+    await setDoc(doc(db, 'users', me.uid, 'friends', fromCode), { uid: fromUid, name: fromName, code: fromCode });
+    await setDoc(doc(db, 'users', fromUid, 'friends', me.code), { uid: me.uid, name: me.name, code: me.code });
+    toast(fromName + '과 친구가 됐어요! 🎉');
+    closeModal(); renderChatList();
+  };
+
+  window.declineReq = async function(docId) {
+    await deleteDoc(doc(db, 'friendRequests', docId));
+    closeModal(); renderChatList();
+  };
+
+  // ── 친구 정보 시트 ──
+  window.openFriendSheet = function() {
+    if (!curFriend) return;
+    showSheet(`
+      <div style="text-align:center;margin-bottom:20px">
+        <div style="width:64px;height:64px;border-radius:50%;background:${avColor(curFriend.code)};display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;margin:0 auto 10px">${ini(curFriend.name)}</div>
+        <div style="font-size:18px;font-weight:700">${esc(curFriend.name)}</div>
+        <div style="font-size:12px;color:var(--tx3);letter-spacing:3px;margin-top:4px">${curFriend.code}</div>
+      </div>
+      <div class="sheet-btns">
+        <button class="sht-btn sht-danger" onclick="confirmRemoveFriend('${curFriend.code}','${curFriend.uid||''}')">친구 삭제</button>
+        <button class="sht-btn sht-cancel" onclick="closeModal()">닫기</button>
+      </div>`);
+  };
+
+  window.confirmRemoveFriend = function(code, uid) {
+    showSheet(`
+      <h2>친구 삭제</h2>
+      <p>정말 이 친구를 삭제할까요?</p>
+      <div class="sheet-btns">
+        <button class="sht-btn sht-danger" onclick="removeFriend('${code}','${uid}')">삭제</button>
+        <button class="sht-btn sht-cancel" onclick="closeModal()">취소</button>
+      </div>`);
+  };
+
+  window.removeFriend = async function(code, uid) {
+    await deleteDoc(doc(db, 'users', me.uid, 'friends', code));
+    if (uid) await deleteDoc(doc(db, 'users', uid, 'friends', me.code));
+    window.closeChat(); closeModal(); renderChatList();
+  };
+
+  // ── 친구 요청 알림 체크 ──
+  async function checkReqBadge() {
+    if (!me) return;
+    const snap = await getDocs(query(collection(db, 'friendRequests'), where('to.uid','==',me.uid)));
+    document.getElementById('noti-dot').style.display = snap.size > 0 ? 'block' : 'none';
+  }
+  setInterval(() => { if (me) checkReqBadge(); }, 5000);
+
+  // ── 모달/시트 헬퍼 ──
+  function showSheet(content) {
+    document.getElementById('modal').innerHTML = `
+      <div class="ov" onclick="if(event.target===this)closeModal()">
+        <div class="sheet">
+          <div class="sheet-handle"></div>
+          ${content}
+        </div>
+      </div>`;
+  }
+  window.closeModal = function() { document.getElementById('modal').innerHTML = ''; };
+</script>
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+:root{--bg:#1a1b1e;--bg2:#2b2d31;--bg3:#313338;--bg4:#404249;--bg5:#232428;--acc:#5865f2;--acc2:#4752c4;--tx:#dbdee1;--tx2:#b5bac1;--tx3:#80848e;--grn:#23a559;--red:#f23f42;--ylw:#f0b232;--tabH:62px;--topH:54px}
+html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto Sans KR',sans-serif;overflow:hidden}
+#app{width:100%;height:100%;max-width:480px;margin:0 auto;display:flex;flex-direction:column;position:relative;overflow:hidden}
+.scr{display:none;flex:1;flex-direction:column;overflow:hidden}
+.scr.on{display:flex}
+
+/* 인증 */
+.auth-c{flex:1;display:flex;align-items:center;justify-content:center;padding:24px;overflow-y:auto;background:var(--bg)}
+.auth-box{background:var(--bg2);border-radius:20px;padding:28px 24px;width:100%;max-width:380px;text-align:center}
+.auth-logo{width:84px;height:84px;border-radius:22px;margin:0 auto 14px;display:block;box-shadow:0 8px 32px rgba(0,0,0,.5)}
+.auth-title{font-size:24px;font-weight:700;margin-bottom:6px}
+.auth-sub{color:var(--tx3);font-size:13px;margin-bottom:20px;line-height:1.6}
+.field{margin-bottom:12px;text-align:left}
+.field label{display:block;font-size:11px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.6px;margin-bottom:5px}
+.si{width:100%;background:var(--bg);border:1.5px solid rgba(255,255,255,.08);border-radius:12px;color:var(--tx);padding:13px 14px;font-size:15px;font-family:inherit;outline:none;transition:border .15s;-webkit-appearance:none}
+.si:focus{border-color:var(--acc)}
+.si.invalid{border-color:rgba(242,63,66,.5)}
+.si.valid{border-color:rgba(35,165,89,.4)}
+.em{color:var(--red);font-size:13px;min-height:18px;margin-bottom:6px;text-align:left}
+.pb{width:100%;padding:14px;border-radius:12px;background:var(--acc);border:none;color:#fff;font-size:15px;font-family:inherit;font-weight:700;cursor:pointer;margin-top:4px}
+.pb:active{background:var(--acc2)}
+.pb:disabled{background:var(--bg4);cursor:not-allowed;opacity:.6}
+.auth-switch{margin-top:16px;font-size:13px;color:var(--tx3)}
+.auth-switch a{color:var(--acc);font-weight:600;cursor:pointer}
+
+/* 비밀번호 강도 */
+.pw-checks{background:var(--bg);border-radius:8px;padding:10px 12px;margin-top:6px;display:flex;flex-direction:column;gap:5px}
+.pw-check{display:flex;align-items:center;gap:7px;font-size:12px;color:var(--tx3);transition:color .2s}
+.pw-check.ok{color:var(--grn)}
+.pw-check .ic{width:15px;height:15px;border-radius:50%;border:1.5px solid var(--tx3);display:inline-flex;align-items:center;justify-content:center;font-size:9px;flex-shrink:0;transition:all .2s}
+.pw-check.ok .ic{background:var(--grn);border-color:var(--grn);color:#fff}
+.pw-strength{height:4px;background:var(--bg);border-radius:2px;margin-top:8px;display:flex;gap:3px}
+.pw-bar{flex:1;background:var(--bg4);border-radius:2px;transition:background .2s}
+.pw-bar.s1{background:var(--red)}.pw-bar.s2{background:var(--ylw)}.pw-bar.s3{background:#7cc15a}.pw-bar.s4{background:var(--grn)}
+
+/* 캡차 */
+.captcha-box{background:var(--bg);border:1.5px solid rgba(255,255,255,.08);border-radius:12px;padding:14px;margin:12px 0}
+.captcha-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.captcha-label{font-size:11px;font-weight:700;color:var(--tx3);text-transform:uppercase;letter-spacing:.6px}
+.captcha-refresh{background:none;border:none;color:var(--tx3);cursor:pointer;font-size:13px;padding:4px 8px;border-radius:6px;font-family:inherit}
+.captcha-img-wrap{background:linear-gradient(135deg,#3a3d44,#252830);border-radius:8px;padding:10px;text-align:center;margin-bottom:10px}
+.captcha-canvas{display:block;margin:0 auto;border-radius:4px}
+.captcha-input{width:100%;background:var(--bg);border:1.5px solid rgba(255,255,255,.1);border-radius:10px;color:var(--tx);padding:12px;font-size:16px;font-family:inherit;outline:none;text-align:center;letter-spacing:4px;font-weight:700;-webkit-appearance:none}
+.math-q{font-size:24px;font-weight:700;text-align:center;color:var(--tx);padding:18px;background:linear-gradient(135deg,#3a3d44,#252830);border-radius:8px;margin-bottom:10px;letter-spacing:2px}
+.math-input{width:100%;background:var(--bg);border:1.5px solid rgba(255,255,255,.1);border-radius:10px;color:var(--tx);padding:12px;font-size:16px;font-family:inherit;outline:none;text-align:center;font-weight:700;-webkit-appearance:none}
+.slider-wrap{background:linear-gradient(135deg,#3a3d44,#252830);border-radius:8px;padding:14px;margin-bottom:10px}
+.slider-track{position:relative;height:40px;background:var(--bg);border-radius:20px;border:1.5px solid rgba(255,255,255,.08);overflow:hidden}
+.slider-target{position:absolute;top:50%;width:44px;height:44px;border-radius:50%;background:rgba(88,101,242,.2);border:2px dashed var(--acc);transform:translate(-50%,-50%);pointer-events:none;display:flex;align-items:center;justify-content:center;color:var(--acc);font-size:10px;font-weight:700}
+.slider-puzzle{position:absolute;top:50%;left:0;width:38px;height:38px;border-radius:50%;background:var(--acc);transform:translate(0,-50%);cursor:grab;display:flex;align-items:center;justify-content:center;color:#fff;font-size:16px;user-select:none;touch-action:none;z-index:2}
+.slider-puzzle.success{background:var(--grn)}
+.slider-hint{font-size:11px;color:var(--tx3);text-align:center;margin-top:8px}
+.cap-status{font-size:12px;text-align:center;padding:6px;border-radius:6px;margin-top:6px}
+.cap-status.ok{color:var(--grn);background:rgba(35,165,89,.1)}
+.cap-status.err{color:var(--red);background:rgba(242,63,66,.1)}
+
+/* 메인 */
+.main-wrap{flex:1;display:flex;flex-direction:column;overflow:hidden}
+.topbar{height:var(--topH);display:flex;align-items:center;padding:0 16px;gap:10px;flex-shrink:0;background:var(--bg2);border-bottom:1px solid rgba(255,255,255,.06)}
+.topbar-logo{width:28px;height:28px;border-radius:8px;flex-shrink:0}
+.topbar-title{font-weight:700;font-size:17px;flex:1}
+.top-icon{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer;color:var(--tx3);border:none;background:none;position:relative}
+.top-icon:active{background:rgba(255,255,255,.08)}
+.notidot{position:absolute;top:4px;right:4px;width:8px;height:8px;border-radius:50%;background:var(--red);border:2px solid var(--bg2);display:none}
+
+.tabbar{height:var(--tabH);background:var(--bg2);border-top:1px solid rgba(255,255,255,.06);display:flex;align-items:stretch;flex-shrink:0;padding-bottom:env(safe-area-inset-bottom,0px)}
+.tab-btn{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer;border:none;background:none;color:var(--tx3);font-size:11px;font-family:inherit;font-weight:500;position:relative;transition:color .15s}
+.tab-btn.on{color:var(--acc)}
+.tab-icon{font-size:22px;line-height:1}
+.tab-badge{position:absolute;top:6px;right:calc(50% - 18px);background:var(--red);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:8px;min-width:16px;text-align:center;display:none}
+
+.tab-page{display:none;flex:1;flex-direction:column;overflow:hidden}
+.tab-page.on{display:flex}
+
+/* 채팅 목록 */
+.chat-list{flex:1;overflow-y:auto}
+.chat-list::-webkit-scrollbar{display:none}
+.cl-item{display:flex;align-items:center;gap:14px;padding:13px 16px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.04)}
+.cl-item:active{background:rgba(255,255,255,.04)}
+.cl-av{width:50px;height:50px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:18px;flex-shrink:0;position:relative}
+.cl-online{position:absolute;bottom:1px;right:1px;width:13px;height:13px;border-radius:50%;background:var(--grn);border:2px solid var(--bg)}
+.cl-body{flex:1;min-width:0}
+.cl-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:3px}
+.cl-name{font-weight:700;font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.cl-time{font-size:11px;color:var(--tx3);flex-shrink:0;margin-left:8px}
+.cl-bottom{display:flex;align-items:center}
+.cl-preview{font-size:13px;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.cl-badge{background:var(--acc);color:#fff;font-size:10px;font-weight:700;padding:2px 7px;border-radius:10px;min-width:19px;text-align:center;flex-shrink:0;margin-left:8px}
+
+/* 채팅 화면 */
+.chat-screen{position:absolute;inset:0;background:var(--bg);display:flex;flex-direction:column;transform:translateX(100%);transition:transform .28s cubic-bezier(.4,0,.2,1);z-index:50}
+.chat-screen.open{transform:translateX(0)}
+.chat-topbar{height:var(--topH);display:flex;align-items:center;padding:0 12px;gap:10px;flex-shrink:0;background:var(--bg2);border-bottom:1px solid rgba(255,255,255,.06)}
+.back-btn{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:22px;color:var(--tx2);background:none;border:none;flex-shrink:0}
+.back-btn:active{background:rgba(255,255,255,.08)}
+.ct-av{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;flex-shrink:0}
+.ct-info{flex:1;min-width:0}
+.ct-name{font-weight:700;font-size:15px}
+.ct-status{font-size:11px;color:var(--grn)}
+.msgs{flex:1;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:4px}
+.msgs::-webkit-scrollbar{display:none}
+.msg-row{display:flex;gap:8px;align-items:flex-end}
+.msg-row.me{flex-direction:row-reverse}
+.msg-av-sm{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0}
+.bubble{max-width:72%;padding:10px 14px;border-radius:20px;font-size:14px;line-height:1.5;word-break:break-word}
+.bubble.them{background:var(--bg3);color:var(--tx2);border-bottom-left-radius:4px}
+.bubble.me{background:var(--acc);color:#fff;border-bottom-right-radius:4px}
+.msg-time-row{text-align:center;font-size:11px;color:var(--tx3);margin:8px 0}
+.tybar{height:22px;padding:0 14px;display:flex;align-items:center;gap:5px;font-size:11px;color:var(--tx3);flex-shrink:0}
+.tdots span{width:4px;height:4px;border-radius:50%;background:var(--tx3);animation:bop 1s infinite;display:inline-block;margin-right:2px}
+.tdots span:nth-child(2){animation-delay:.15s}
+.tdots span:nth-child(3){animation-delay:.3s}
+@keyframes bop{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-4px)}}
+.input-area{padding:8px 14px 14px;flex-shrink:0;background:var(--bg2);border-top:1px solid rgba(255,255,255,.06)}
+.input-row{display:flex;align-items:flex-end;gap:10px}
+.msg-textarea{flex:1;background:var(--bg4);border:none;outline:none;color:var(--tx);padding:11px 16px;font-size:15px;font-family:inherit;border-radius:24px;resize:none;line-height:1.4;max-height:100px;-webkit-appearance:none}
+.msg-textarea::placeholder{color:var(--tx3)}
+.send-fab{width:44px;height:44px;border-radius:50%;background:var(--acc);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.send-fab:active{background:var(--acc2)}
+
+/* 프로필 탭 */
+.profile-wrap{flex:1;overflow-y:auto;padding:20px 16px;background:var(--bg)}
+.profile-card{background:var(--bg2);border-radius:18px;padding:28px;text-align:center;margin-bottom:16px}
+.profile-av{width:76px;height:76px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:28px;margin:0 auto 12px}
+.profile-name{font-size:22px;font-weight:700;margin-bottom:4px}
+.profile-code{font-size:13px;color:var(--tx3);letter-spacing:2px;cursor:pointer;padding:6px 16px;background:var(--bg3);border-radius:20px;display:inline-block;margin-top:6px}
+.menu-section{background:var(--bg2);border-radius:16px;overflow:hidden;margin-bottom:12px}
+.menu-item{display:flex;align-items:center;gap:14px;padding:15px 16px;cursor:pointer;border-bottom:1px solid rgba(255,255,255,.04)}
+.menu-item:last-child{border-bottom:none}
+.menu-item:active{background:rgba(255,255,255,.04)}
+.menu-icon{font-size:20px;width:28px;text-align:center;flex-shrink:0}
+.menu-label{flex:1;font-size:15px;font-weight:500}
+.menu-arrow{color:var(--tx3);font-size:16px}
+.menu-danger{color:var(--red)}
+
+/* 모달/시트 */
+.ov{position:absolute;inset:0;background:rgba(0,0,0,.8);display:flex;align-items:flex-end;z-index:200}
+.sheet{background:var(--bg2);border-radius:24px 24px 0 0;width:100%;padding:20px 20px calc(32px + env(safe-area-inset-bottom,0px));animation:slideUp .25s ease}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.sheet-handle{width:36px;height:4px;background:rgba(255,255,255,.2);border-radius:2px;margin:0 auto 20px}
+.sheet h2{font-size:18px;font-weight:700;margin-bottom:8px}
+.sheet p{font-size:13px;color:var(--tx3);margin-bottom:18px;line-height:1.7}
+.sheet-btns{display:flex;flex-direction:column;gap:10px}
+.sht-btn{width:100%;padding:14px;border-radius:14px;font-size:15px;font-family:inherit;font-weight:700;cursor:pointer;border:none}
+.sht-cancel{background:var(--bg4);color:var(--tx2)}
+.sht-danger{background:var(--red);color:#fff}
+.sht-ok{background:var(--acc);color:#fff}
+.mi2{width:100%;background:var(--bg);border:1.5px solid rgba(255,255,255,.1);border-radius:12px;color:var(--tx);padding:13px 14px;font-size:15px;font-family:inherit;outline:none;margin-bottom:10px;-webkit-appearance:none}
+.mi2:focus{border-color:var(--acc)}
+.em2{color:var(--red);font-size:13px;min-height:18px;margin-bottom:8px}
+.add-btn{margin-top:10px;padding:11px 26px;background:var(--acc);border:none;color:#fff;border-radius:24px;font-size:14px;font-family:inherit;font-weight:700;cursor:pointer}
+
+/* 빈 상태 */
+.empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--tx3);gap:10px;font-size:14px;padding:40px}
+.empty-state .ei{font-size:56px;margin-bottom:4px;opacity:.5}
+
+/* 토스트 */
+.toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#23a559;color:#fff;padding:9px 22px;border-radius:26px;font-size:13px;font-weight:600;z-index:300;pointer-events:none;opacity:0;transition:opacity .2s;white-space:nowrap}
+.toast.on{opacity:1}
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- 로그인 -->
+<div id="s-login" class="scr on">
+  <div class="auth-c"><div class="auth-box">
+    <img class="auth-logo" src="chatly-logo.png" onerror="this.style.fontSize='48px';this.style.lineHeight='84px';this.textContent='💬'" alt="Chatly">
+    <div class="auth-title">Chatly</div>
+    <div class="auth-sub">친구와 대화하려면 로그인하세요</div>
+    <div class="field"><label>아이디</label><input class="si" id="login-id" placeholder="아이디 입력" autocomplete="username"></div>
+    <div class="field"><label>비밀번호</label><input class="si" id="login-pw" type="password" placeholder="비밀번호 입력" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()"></div>
+    <div class="em" id="login-err"></div>
+    <button class="pb" onclick="doLogin()">로그인</button>
+    <div class="auth-switch">계정이 없으신가요? <a onclick="showSignup()">회원가입</a></div>
+  </div></div>
+</div>
+
+<!-- 회원가입 -->
+<div id="s-signup" class="scr">
+  <div class="auth-c"><div class="auth-box">
+    <img class="auth-logo" src="chatly-logo.png" onerror="this.style.fontSize='48px';this.style.lineHeight='84px';this.textContent='💬'" alt="Chatly">
+    <div class="auth-title">회원가입</div>
+    <div class="auth-sub">로봇이 아닌지 확인해주세요 🤖</div>
+    <div class="field"><label>아이디 (4~16자)</label><input class="si" id="su-id" placeholder="영문/숫자 4~16자" maxlength="16"></div>
+    <div class="field"><label>닉네임</label><input class="si" id="su-name" placeholder="2~12자" maxlength="12"></div>
+    <div class="field">
+      <label>비밀번호</label>
+      <input class="si" id="su-pw" type="password" placeholder="8자 이상, 특수문자 포함" oninput="checkPwStrength()">
+      <div class="pw-strength"><div class="pw-bar" id="pw-bar1"></div><div class="pw-bar" id="pw-bar2"></div><div class="pw-bar" id="pw-bar3"></div><div class="pw-bar" id="pw-bar4"></div></div>
+      <div class="pw-checks">
+        <div class="pw-check" id="chk-len"><span class="ic">✓</span><span>8자 이상</span></div>
+        <div class="pw-check" id="chk-letter"><span class="ic">✓</span><span>영문 포함</span></div>
+        <div class="pw-check" id="chk-number"><span class="ic">✓</span><span>숫자 포함</span></div>
+        <div class="pw-check" id="chk-special"><span class="ic">✓</span><span>특수문자 포함</span></div>
+      </div>
+    </div>
+    <div class="field"><label>비밀번호 확인</label><input class="si" id="su-pw2" type="password" placeholder="다시 입력" oninput="checkPwMatch()"></div>
+    <div class="captcha-box">
+      <div class="captcha-head">
+        <span class="captcha-label" id="cap-label">🤖 로봇 인증</span>
+        <button class="captcha-refresh" onclick="newCaptcha()">🔄 새로고침</button>
+      </div>
+      <div id="captcha-content"></div>
+      <div class="cap-status" id="cap-status" style="display:none"></div>
+    </div>
+    <div class="em" id="su-err"></div>
+    <button class="pb" id="signup-btn" onclick="doSignup()" disabled>가입하기</button>
+    <div class="auth-switch">이미 계정이 있나요? <a onclick="showLogin()">로그인</a></div>
+  </div></div>
+</div>
+
+<!-- 메인 앱 -->
+<div id="s-main" class="scr">
+  <div class="main-wrap">
+    <div class="tab-page on" id="tab-chats">
+      <div class="topbar">
+        <img class="topbar-logo" src="chatly-logo.png" onerror="this.style.display='none'" alt="">
+        <span class="topbar-title">메시지</span>
+        <button class="top-icon" onclick="openAddSheet()">＋</button>
+        <button class="top-icon" id="bell-btn" onclick="openReqSheet()">🔔<span class="notidot" id="noti-dot"></span></button>
+      </div>
+      <div class="chat-list" id="chat-list"></div>
+    </div>
+    <div class="tab-page" id="tab-profile">
+      <div class="topbar">
+        <img class="topbar-logo" src="chatly-logo.png" onerror="this.style.display='none'" alt="">
+        <span class="topbar-title">내 정보</span>
+      </div>
+      <div class="profile-wrap">
+        <div class="profile-card">
+          <div class="profile-av" id="prof-av">?</div>
+          <div class="profile-name" id="prof-name">-</div>
+          <div class="profile-code" id="prof-code" onclick="copyCode()">코드: ------</div>
+        </div>
+        <div class="menu-section">
+          <div class="menu-item" onclick="copyCode()"><span class="menu-icon">🔑</span><span class="menu-label">내 코드 복사</span><span class="menu-arrow">›</span></div>
+          <div class="menu-item" onclick="openAddSheet()"><span class="menu-icon">👤</span><span class="menu-label">친구 추가</span><span class="menu-arrow">›</span></div>
+          <div class="menu-item" onclick="openReqSheet()"><span class="menu-icon">🔔</span><span class="menu-label">친구 요청 확인</span><span class="menu-arrow">›</span></div>
+        </div>
+        <div class="menu-section">
+          <div class="menu-item menu-danger" onclick="openLogoutSheet()"><span class="menu-icon">🚪</span><span class="menu-label menu-danger">로그아웃</span><span class="menu-arrow">›</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="tabbar">
+      <button class="tab-btn on" id="tbtn-chats" onclick="switchTab('chats')"><span class="tab-icon">💬</span><span>메시지</span><span class="tab-badge" id="tab-badge"></span></button>
+      <button class="tab-btn" id="tbtn-profile" onclick="switchTab('profile')"><span class="tab-icon">👤</span><span>내 정보</span></button>
+    </div>
+  </div>
+  <div class="chat-screen" id="chat-screen">
+    <div class="chat-topbar">
+      <button class="back-btn" onclick="closeChat()">‹</button>
+      <div class="ct-av" id="ct-av">?</div>
+      <div class="ct-info"><div class="ct-name" id="ct-name">-</div><div class="ct-status">온라인</div></div>
+      <button class="top-icon" onclick="openFriendSheet()" style="font-size:17px">ℹ</button>
+    </div>
+    <div class="msgs" id="msgs"></div>
+    <div class="tybar" id="tybar" style="display:none"><div class="tdots"><span></span><span></span><span></span></div><span id="ty-txt"></span></div>
+    <div class="input-area">
+      <div class="input-row">
+        <textarea class="msg-textarea" id="msg-in" placeholder="메시지 입력..." rows="1" oninput="autoResize(this)" onkeydown="onKey(event)"></textarea>
+        <button class="send-fab" onclick="sendMsg()">➤</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modal"></div>
+<div class="toast" id="toast"></div>
+</div>
+</body>
+</html>
