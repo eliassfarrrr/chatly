@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
-   const firebaseConfig = {
+  const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -797,36 +797,86 @@
   window.openAddSheet = function() {
     showSheet(`
       <h2>친구 추가</h2>
-      <p>친구의 6자리 코드를 입력하세요.<br>
+      <p>코드, 아이디, 닉네임으로 검색할 수 있어요.<br>
       내 코드: <strong style="color:var(--acc);letter-spacing:2px">${me.code}</strong>
       <span onclick="copyCode()" style="color:var(--acc);cursor:pointer;font-size:12px">(복사)</span></p>
-      <input class="mi2" id="fc-inp" placeholder="예: ABC123" maxlength="6"
-        style="text-transform:uppercase;letter-spacing:4px;text-align:center;font-size:20px;font-weight:700"
-        oninput="this.value=this.value.toUpperCase()">
+      <input class="mi2" id="fc-inp" placeholder="코드 / 아이디 / 닉네임">
       <div class="em2" id="add-err"></div>
+      <div id="search-results" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
       <div class="sheet-btns">
-        <button class="sht-btn sht-ok" onclick="doAdd()">요청 보내기</button>
+        <button class="sht-btn sht-ok" onclick="doAdd()">검색 / 요청 보내기</button>
         <button class="sht-btn sht-cancel" onclick="closeModal()">취소</button>
       </div>`);
     setTimeout(() => document.getElementById('fc-inp')?.focus(), 100);
   };
 
   window.doAdd = async function() {
-    const code = document.getElementById('fc-inp').value.trim().toUpperCase();
+    const val = document.getElementById('fc-inp').value.trim();
     const err = document.getElementById('add-err');
-    if (code.length !== 6) { err.textContent='코드는 6자리예요.'; return; }
-    if (code === me.code) { err.textContent='자기 자신에게는 요청할 수 없어요.'; return; }
-    err.textContent='검색 중...';
-    const codeSnap = await getDoc(doc(db, 'codes', code));
-    if (!codeSnap.exists()) { err.textContent='해당 코드의 사용자를 찾을 수 없어요.'; return; }
-    const target = codeSnap.data();
-    // 친구 요청 전송
-    await setDoc(doc(db, 'friendRequests', `${target.uid}_${me.uid}`), {
+    const resultsEl = document.getElementById('search-results');
+    if (!val) { err.textContent = '검색어를 입력하세요.'; return; }
+    err.textContent = '검색 중...';
+    resultsEl.innerHTML = '';
+
+    const fs = await getFriends();
+    let targets = [];
+
+    // 6자리 코드 검색
+    if (/^[A-Z0-9]{6}$/i.test(val)) {
+      const snap = await getDoc(doc(db, 'codes', val.toUpperCase()));
+      if (snap.exists()) targets.push({ code: snap.id, ...snap.data() });
+    }
+
+    // 아이디로 검색
+    if (!targets.length) {
+      const snap = await getDoc(doc(db, 'usernames', val.toLowerCase()));
+      if (snap.exists()) {
+        const codeSnap = await getDoc(doc(db, 'codes', snap.data().code));
+        if (codeSnap.exists()) targets.push({ code: snap.data().code, ...codeSnap.data() });
+      }
+    }
+
+    // 닉네임으로 검색 (codes 컬렉션에서 name 필드 쿼리)
+    if (!targets.length) {
+      const snap = await getDocs(query(collection(db, 'codes'), where('name', '==', val), limit(5)));
+      snap.docs.forEach(d => targets.push({ code: d.id, ...d.data() }));
+    }
+
+    err.textContent = '';
+
+    if (!targets.length) { err.textContent = '해당 사용자를 찾을 수 없어요.'; return; }
+
+    // 결과 렌더링
+    targets.forEach(t => {
+      if (t.id === me.id) return; // 자기 자신 제외
+      const alreadyFriend = fs.find(f => f.code === t.code);
+      const div = document.createElement('div');
+      div.style.cssText = 'background:var(--bg3);border-radius:12px;padding:12px;display:flex;align-items:center;gap:12px';
+      const avHtml = t.photoUrl
+        ? `<div style="width:40px;height:40px;border-radius:50%;background:${avColor(t.code)};background-image:url(${t.photoUrl});background-size:cover;background-position:center;flex-shrink:0"></div>`
+        : `<div style="width:40px;height:40px;border-radius:50%;background:${avColor(t.code)};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:16px;flex-shrink:0">${ini(t.name)}</div>`;
+      div.innerHTML = `
+        ${avHtml}
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:15px">${esc(t.name)}</div>
+          <div style="font-size:12px;color:var(--tx3)">${t.id ? '@'+t.id : ''} · ${t.code}</div>
+          ${t.statusMsg ? `<div style="font-size:12px;color:var(--tx3);margin-top:2px">${esc(t.statusMsg)}</div>` : ''}
+        </div>
+        ${alreadyFriend
+          ? `<span style="font-size:12px;color:var(--grn)">친구</span>`
+          : `<button onclick="sendReqTo('${t.uid}','${t.code}','${esc(t.name)}')" style="background:var(--acc);border:none;color:#fff;padding:7px 14px;border-radius:8px;font-size:13px;font-weight:700;font-family:inherit;cursor:pointer;flex-shrink:0">추가</button>`}`;
+      resultsEl.appendChild(div);
+    });
+  };
+
+  window.sendReqTo = async function(uid, code, name) {
+    if (code === me.code) { toast('자기 자신에게는 요청할 수 없어요.', '#f23f42'); return; }
+    await setDoc(doc(db, 'friendRequests', `${uid}_${me.uid}`), {
       from: { uid: me.uid, name: me.name, code: me.code },
-      to: { uid: target.uid },
+      to: { uid },
       createdAt: serverTimestamp()
     });
-    toast('친구 요청을 보냈어요! ✉');
+    toast(name + '에게 친구 요청을 보냈어요! ✉');
     closeModal();
   };
 
