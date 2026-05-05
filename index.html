@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
-  const firebaseConfig = {
+   const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -915,27 +915,27 @@
 
   // ── 프로필 사진 변경 ──
   window.changeProfilePhoto = function() {
-    const input = document.createElement('input');
-    input.type = 'file'; input.accept = 'image/*';
-    input.onchange = async () => {
-      const file = input.files[0]; if (!file) return;
-      toast('프로필 사진 업로드 중...', '#5865f2');
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('upload_preset', CLOUDINARY_PRESET);
-      formData.append('folder', 'chatly/profiles');
-      try {
-        const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { method: 'POST', body: formData });
-        const data = await res.json();
-        if (!data.secure_url) throw new Error();
-        me.photoUrl = data.secure_url;
-        await updateDoc(doc(db, 'users', me.uid), { photoUrl: data.secure_url });
-        await setDoc(doc(db, 'codes', me.code), { photoUrl: data.secure_url }, { merge: true });
-        updateMyProfileUI();
-        toast('프로필 사진 변경 완료! ✅');
-      } catch { toast('업로드 실패 😢', '#f23f42'); }
-    };
-    input.click();
+    document.getElementById('profile-photo-input').click();
+  };
+
+  window.onProfilePhotoChange = async function(input) {
+    const file = input.files[0]; if (!file) return;
+    input.value = '';
+    toast('프로필 사진 업로드 중...', '#5865f2');
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('upload_preset', CLOUDINARY_PRESET);
+    formData.append('folder', 'chatly/profiles');
+    try {
+      const res = await fetch(`https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD}/image/upload`, { method: 'POST', body: formData });
+      const data = await res.json();
+      if (!data.secure_url) throw new Error();
+      me.photoUrl = data.secure_url;
+      await updateDoc(doc(db, 'users', me.uid), { photoUrl: data.secure_url });
+      await setDoc(doc(db, 'codes', me.code), { photoUrl: data.secure_url }, { merge: true });
+      updateMyProfileUI();
+      toast('프로필 사진 변경 완료! ✅');
+    } catch { toast('업로드 실패 😢', '#f23f42'); }
   };
 
   // ── 상태 메시지 편집 ──
@@ -1544,6 +1544,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
 
 <div id="modal"></div>
 <div class="toast" id="toast"></div>
+<input type="file" id="profile-photo-input" accept="image/*" style="display:none" onchange="onProfilePhotoChange(this)">
 </div>
 </body>
 </html>
