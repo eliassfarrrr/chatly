@@ -27,7 +27,7 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
-  const firebaseConfig = {
+   const firebaseConfig = {
   apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
   authDomain: "chatly-app-5398e.firebaseapp.com",
   projectId: "chatly-app-5398e",
@@ -1114,7 +1114,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
 .msg-row{display:flex;gap:8px;align-items:flex-end}
 .msg-row.me{flex-direction:row-reverse}
 .msg-av-sm{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0}
-.bubble{max-width:72%;min-width:48px;width:fit-content;padding:10px 14px;border-radius:20px;font-size:14px;line-height:1.5;word-break:break-all;white-space:pre-wrap;max-width:min(72%,168px)}
+.bubble{min-width:48px;padding:10px 14px;border-radius:20px;font-size:14px;line-height:1.5;word-break:break-all;white-space:pre-wrap;max-width:min(72%,42vw)}
 .bubble.them{background:var(--bg3);color:var(--tx2);border-bottom-left-radius:4px}
 .bubble.me{background:var(--acc);color:#fff;border-bottom-right-radius:4px}
 .msg-time-row{text-align:center;font-size:11px;color:var(--tx3);margin:8px 0}
