@@ -27,26 +27,29 @@
   } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js';
 
   // ── Firebase 설정 (firebase-config.js 내용을 여기 붙여넣으세요) ──
- const firebaseConfig = {
-  apiKey: "AIzaSyA9UJ_h_oiMsWvffjvHpwz4Du-JiLdmH9k",
-  authDomain: "chatly-app-5398e.firebaseapp.com",
-  projectId: "chatly-app-5398e",
-  storageBucket: "chatly-app-5398e.firebasestorage.app",
-  messagingSenderId: "422608532159",
-  appId: "1:422608532159:web:b623fc75dd07ecbcc80c0a"
-};
+  const firebaseConfig = {
+    apiKey: "여기에_apiKey_입력",
+    authDomain: "여기에_authDomain_입력",
+    projectId: "여기에_projectId_입력",
+    storageBucket: "여기에_storageBucket_입력",
+    messagingSenderId: "여기에_messagingSenderId_입력",
+    appId: "여기에_appId_입력"
+  };
 
   const app = initializeApp(firebaseConfig);
   const auth = getAuth(app);
   const db = getFirestore(app);
 
   // ── 전역 상태 ──
+  const GIPHY_KEY = 'sUqRbCQzvXsU6OpdmM7mLliGORPavfSk';
+
   let me = null;          // { uid, id, name, code }
   let curFriend = null;   // { uid, code, name }
   let msgUnsub = null;    // Firestore 실시간 리스너 해제 함수
   let captchaAnswer = null;
   let captchaType = null;
   let captchaPassed = false;
+  let gifDebounce = null;
 
   // ── 유틸 ──
   function genCode() {
@@ -483,10 +486,13 @@
       const isMe = msg.senderCode === me.code;
       const row = document.createElement('div');
       row.className = 'msg-row' + (isMe ? ' me' : '');
+      const content = msg.gifUrl
+        ? `<img src="${msg.gifUrl}" style="max-width:200px;border-radius:12px;display:block" alt="GIF">`
+        : `<div class="bubble ${isMe ? 'me' : 'them'}">${esc(msg.text)}</div>`;
       if (!isMe) {
-        row.innerHTML = `<div class="msg-av-sm" style="background:${avColor(msg.senderCode)}">${ini(curFriend?.name||'?')}</div><div class="bubble them">${esc(msg.text)}</div>`;
+        row.innerHTML = `<div class="msg-av-sm" style="background:${avColor(msg.senderCode)}">${ini(curFriend?.name||'?')}</div>${content}`;
       } else {
-        row.innerHTML = `<div class="bubble me">${esc(msg.text)}</div>`;
+        row.innerHTML = content;
       }
       el.appendChild(row);
     });
@@ -632,6 +638,78 @@
     document.getElementById('noti-dot').style.display = snap.size > 0 ? 'block' : 'none';
   }
   setInterval(() => { if (me) checkReqBadge(); }, 5000);
+
+  // ── GIF 피커 ──
+  window.openGifPicker = async function() {
+    showGifSheet('');
+  };
+
+  async function searchGifs(q) {
+    const endpoint = q
+      ? `https://api.giphy.com/v1/gifs/search?api_key=${GIPHY_KEY}&q=${encodeURIComponent(q)}&limit=20&rating=g`
+      : `https://api.giphy.com/v1/gifs/trending?api_key=${GIPHY_KEY}&limit=20&rating=g`;
+    const res = await fetch(endpoint);
+    const json = await res.json();
+    return json.data;
+  }
+
+  function showGifSheet(initialQuery) {
+    document.getElementById('modal').innerHTML = `
+      <div class="ov" onclick="if(event.target===this)closeModal()">
+        <div class="gif-picker">
+          <div class="sheet-handle"></div>
+          <input class="gif-search" id="gif-search-inp" placeholder="GIF 검색..."
+            value="${initialQuery}"
+            oninput="debounceGifSearch(this.value)"
+            autocomplete="off">
+          <div class="gif-grid" id="gif-grid">
+            <div style="grid-column:span 2;text-align:center;padding:24px;color:var(--tx3);font-size:13px">불러오는 중...</div>
+          </div>
+        </div>
+      </div>`;
+    loadGifs(initialQuery);
+    setTimeout(() => document.getElementById('gif-search-inp')?.focus(), 100);
+  }
+
+  window.debounceGifSearch = function(q) {
+    clearTimeout(gifDebounce);
+    gifDebounce = setTimeout(() => loadGifs(q), 400);
+  };
+
+  async function loadGifs(q) {
+    const grid = document.getElementById('gif-grid');
+    if (!grid) return;
+    grid.innerHTML = '<div style="grid-column:span 2;text-align:center;padding:24px;color:var(--tx3);font-size:13px">검색 중...</div>';
+    try {
+      const gifs = await searchGifs(q);
+      if (!gifs.length) {
+        grid.innerHTML = '<div style="grid-column:span 2;text-align:center;padding:24px;color:var(--tx3);font-size:13px">결과가 없어요</div>';
+        return;
+      }
+      grid.innerHTML = gifs.map(g => `
+        <div class="gif-item" onclick="sendGif('${g.images.fixed_height.url}')">
+          <img src="${g.images.fixed_height_small.url}" loading="lazy" alt="${g.title}">
+        </div>`).join('');
+    } catch(e) {
+      grid.innerHTML = '<div style="grid-column:span 2;text-align:center;padding:24px;color:var(--red);font-size:13px">오류가 발생했어요</div>';
+    }
+  }
+
+  window.sendGif = async function(url) {
+    if (!curFriend || !me) return;
+    closeModal();
+    const ck = convKey(me.code, curFriend.code);
+    const msgsRef = collection(db, 'conversations', ck, 'messages');
+    await addDoc(msgsRef, { text: '', gifUrl: url, senderCode: me.code, senderName: me.name, createdAt: serverTimestamp() });
+    const convSnap = await getDoc(doc(db, 'conversations', ck));
+    await setDoc(doc(db, 'conversations', ck), {
+      lastText: 'GIF 🎞',
+      lastAt: serverTimestamp(),
+      lastSenderCode: me.code,
+      [`unread.${curFriend.code}`]: (convSnap.data()?.unread?.[curFriend.code] || 0) + 1,
+      [`unread.${me.code}`]: 0
+    }, { merge: true });
+  };
 
   // ── 모달/시트 헬퍼 ──
   function showSheet(content) {
@@ -803,6 +881,18 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
 .empty-state{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;color:var(--tx3);gap:10px;font-size:14px;padding:40px}
 .empty-state .ei{font-size:56px;margin-bottom:4px;opacity:.5}
 
+/* GIF 피커 */
+.gif-btn{background:var(--bg3);border:none;color:var(--acc);font-size:12px;font-weight:700;padding:0 12px;border-radius:18px;cursor:pointer;height:38px;flex-shrink:0;letter-spacing:.5px}
+.gif-btn:active{background:var(--bg4)}
+.gif-picker{background:var(--bg2);border-radius:24px 24px 0 0;width:100%;padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));animation:slideUp .25s ease}
+.gif-search{width:100%;background:var(--bg);border:1.5px solid rgba(255,255,255,.1);border-radius:12px;color:var(--tx);padding:11px 14px;font-size:14px;font-family:inherit;outline:none;margin-bottom:12px;-webkit-appearance:none}
+.gif-search:focus{border-color:var(--acc)}
+.gif-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:6px;max-height:300px;overflow-y:auto}
+.gif-grid::-webkit-scrollbar{display:none}
+.gif-item{border-radius:10px;overflow:hidden;cursor:pointer;aspect-ratio:1;background:var(--bg3)}
+.gif-item img{width:100%;height:100%;object-fit:cover;display:block}
+.gif-item:active{opacity:.7}
+
 /* 토스트 */
 .toast{position:fixed;bottom:80px;left:50%;transform:translateX(-50%);background:#23a559;color:#fff;padding:9px 22px;border-radius:26px;font-size:13px;font-weight:600;z-index:300;pointer-events:none;opacity:0;transition:opacity .2s;white-space:nowrap}
 .toast.on{opacity:1}
@@ -908,6 +998,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
     <div class="tybar" id="tybar" style="display:none"><div class="tdots"><span></span><span></span><span></span></div><span id="ty-txt"></span></div>
     <div class="input-area">
       <div class="input-row">
+        <button class="gif-btn" onclick="openGifPicker()" type="button">GIF</button>
         <textarea class="msg-textarea" id="msg-in" placeholder="메시지 입력..." rows="1" oninput="autoResize(this)" onkeydown="onKey(event)"></textarea>
         <button class="send-fab" onclick="sendMsg()">➤</button>
       </div>
