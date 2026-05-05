@@ -912,18 +912,17 @@
   };
 
   window.acceptReq = async function(docId, fromUid, fromName, fromCode) {
+    closeModal(); // 먼저 닫기
     await deleteDoc(doc(db, 'friendRequests', docId));
-    // 양방향 친구 추가 - 상대방 정보도 codes에서 가져와서 저장
     await setDoc(doc(db, 'users', me.uid, 'friends', fromCode), { uid: fromUid, name: fromName, code: fromCode });
     await setDoc(doc(db, 'users', fromUid, 'friends', me.code), { uid: me.uid, name: me.name, code: me.code });
-    // 수락 알림을 위한 notification 저장 (요청 보낸 사람이 감지)
     await setDoc(doc(db, 'notifications', fromUid + '_' + me.uid), {
       type: 'friendAccepted',
       from: { uid: me.uid, name: me.name, code: me.code },
       createdAt: serverTimestamp()
     });
     toast(fromName + '과 친구가 됐어요! 🎉');
-    closeModal(); renderChatList();
+    renderChatList();
   };
 
   window.declineReq = async function(docId) {
@@ -972,9 +971,12 @@
   };
 
   window.removeFriend = async function(code, uid) {
+    closeModal(); // 먼저 닫기
     await deleteDoc(doc(db, 'users', me.uid, 'friends', code));
     if (uid) await deleteDoc(doc(db, 'users', uid, 'friends', me.code));
-    window.closeChat(); closeModal(); renderChatList();
+    window.closeChat();
+    toast('친구를 삭제했어요.');
+    renderChatList();
   };
 
   // ── 프로필 사진 변경 ──
