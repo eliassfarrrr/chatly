@@ -465,6 +465,11 @@
     // 입력 중 리스너 시작
     startTypingListener(ck);
 
+    // 한글 조합 이벤트 등록
+    const msgIn = document.getElementById('msg-in');
+    msgIn.addEventListener('compositionstart', () => { isComposing = true; });
+    msgIn.addEventListener('compositionend', () => { isComposing = false; });
+
     // 읽음 처리
     await markRead(ck);
     setTimeout(() => document.getElementById('msg-in').focus(), 300);
@@ -696,9 +701,10 @@
     await Promise.all(batch);
   }
 
+  let isComposing = false;
   window.onKey = function(e) {
     if (e.key === 'Enter' && !e.shiftKey) {
-      if (e.isComposing || e.keyCode === 229) return; // 한글 조합 중 무시
+      if (isComposing) return;
       e.preventDefault();
       window.sendMsg();
     }
@@ -1334,7 +1340,7 @@ html,body{height:100%;background:var(--bg);color:var(--tx);font-family:'Noto San
           📷
           <input type="file" accept="image/*" style="display:none" onchange="uploadPhoto(this)">
         </label>
-        <textarea class="msg-textarea" id="msg-in" placeholder="메시지 입력..." rows="1" oninput="autoResize(this);onType()" onkeyup="onKey(event)"></textarea>
+        <textarea class="msg-textarea" id="msg-in" placeholder="메시지 입력..." rows="1" oninput="autoResize(this);onType()" onkeydown="onKey(event)"></textarea>
         <button class="send-fab" onclick="sendMsg()">➤</button>
       </div>
     </div>
